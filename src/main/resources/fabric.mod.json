@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "terramax",
+	"version": "${version}",
+	"name": "Terramax",
+	"description": "Adds grounded, earthlike biomes alongside vanilla ones, and edits vanilla biomes.",
+	"authors": [
+		"Fury"
+	],
+	"contact": {},
+	"license": "Apache-2.0",
+	"icon": "assets/terramax/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.fury.terramax.Terramax"
+		],
+		"client": [
+			"com.fury.terramax.client.TerramaxClient"
+		],
+		"fabric-datagen": [
+			"com.fury.terramax.client.TerramaxDataGenerator"
+		]
+	},
+	"mixins": [
+		"terramax.mixins.json",
+		{
+			"config": "terramax.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

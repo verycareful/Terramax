@@ -1,0 +1,68 @@
+# gradle
+
+.gradle/
+build/
+out/
+classes/
+
+# eclipse
+
+*.launch
+
+# idea
+
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# vscode
+
+.settings/
+.vscode/
+bin/
+.classpath
+.project
+
+# macos
+
+*.DS_Store
+
+# fabric
+
+run/
+
+# java
+
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+
+# terramax
+
+# Private working notes and design specs. docs/ is public; local/ is not.
+local/
+
+# Agent instructions and project conventions, kept private
+CLAUDE.md
+
+# Datagen hash cache. The generated data itself IS committed; this is not.
+src/main/generated/.cache/
+
+# Working memory for uncommitted changes (see dev-workflow)
+changes_version.md
+
+# Jars, except the Gradle wrapper which MUST be committed or ./gradlew breaks.
+# The Fabric template ships no *.jar rule, which is how the realworld jars very
+# nearly ended up in history.
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Archives and predecessor material kept on disk as reference
+*.zip
+realworld-decompiled/
+_realworld_backup/
+
+# Logs
+*.log
