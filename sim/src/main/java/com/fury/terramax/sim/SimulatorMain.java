@@ -12,6 +12,7 @@ import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.plate.PlateType;
+import com.fury.terramax.core.terrain.PlateBaseHeight;
 
 /**
  * Entry point for the standalone terrain simulator.
@@ -38,6 +39,16 @@ public final class SimulatorMain {
 	/** Sample count for the statistics summary. Large enough for stable proportions. */
 	private static final int STATS_GRID = 400;
 
+	/** Plates crossed by the section. Enough to show several boundaries in one profile. */
+	private static final double CROSS_SECTION_PLATES = 6.0;
+
+	private static final int CROSS_SECTION_WIDTH = 1600;
+	private static final int CROSS_SECTION_HEIGHT = 520;
+
+	/** The dimension's vertical range, from the design spec. */
+	private static final int MIN_Y = -256;
+	private static final int MAX_Y = 1792;
+
 	private static final Path OUTPUT_DIR = Path.of("build", "renders");
 
 	private SimulatorMain() {
@@ -45,6 +56,12 @@ public final class SimulatorMain {
 
 	public static void main(final String[] args) throws IOException {
 		PlateMapSettings settings = PlateMapSettings.defaults();
+
+		if (args.length > 0 && args[0].equals("--viewer")) {
+			TerrainViewer.launch(SEED, settings);
+			return;
+		}
+
 		PlateMap plates = new PlateMap(SEED, settings);
 
 		printConfiguration(settings, plates);
@@ -60,6 +77,7 @@ public final class SimulatorMain {
 		write("boundary-type-continental", continental, plates, MapRenderer.Layer.BOUNDARY_TYPE);
 		write("boundaries-continental", continental, plates, MapRenderer.Layer.BOUNDARY_DISTANCE);
 		write("plates-local", local, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
+		writeCrossSection(plates, settings);
 
 		printStatistics(plates, continental);
 
@@ -120,6 +138,32 @@ public final class SimulatorMain {
 			System.out.printf("  %-12s %5.1f%% of boundaries by nearest%n",
 					type, 100.0 * byBoundary.getOrDefault(type, 0) / total);
 		}
+	}
+
+	/**
+	 * Plots a profile across several plates.
+	 *
+	 * <p>Runs diagonally rather than along an axis, so it cuts boundaries at varied
+	 * angles instead of repeatedly hitting them square on.
+	 */
+	private static void writeCrossSection(
+			final PlateMap plates, final PlateMapSettings settings) throws IOException {
+		double reach = settings.spacingBlocks() * CROSS_SECTION_PLATES * 0.5;
+
+		long start = System.nanoTime();
+		var image = CrossSectionPlotter.plot(
+				new PlateBaseHeight(plates),
+				-reach, -reach * 0.4,
+				reach, reach * 0.4,
+				MIN_Y, MAX_Y,
+				settings.seaLevel(),
+				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT);
+		long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+		ImageIO.write(image, "PNG", OUTPUT_DIR.resolve("cross-section.png").toFile());
+
+		System.out.printf("  %-26s %,10.0f blocks along, y=%d to y=%d,      %4d ms%n",
+				"cross-section", reach * 2.0 * Math.hypot(1.0, 0.4), MIN_Y, MAX_Y, elapsedMs);
 	}
 
 	private static void write(
