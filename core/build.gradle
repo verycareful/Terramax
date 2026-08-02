@@ -1,0 +1,29 @@
+// Terrain mathematics. Doubles in, doubles out.
+//
+// This module has NO Minecraft dependency and must never gain one. The rule is
+// enforced here rather than by discipline: with no Minecraft on the classpath,
+// an accidental `net.minecraft` import fails to compile.
+//
+// That guarantee is what makes the simulator trustworthy. It runs the identical
+// code the game runs, because only one copy of the maths exists.
+
+plugins {
+	id 'java-library'
+}
+
+group = project.maven_group
+version = project.mod_version
+
+repositories {
+	mavenCentral()
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}

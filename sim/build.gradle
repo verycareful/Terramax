@@ -1,0 +1,37 @@
+// Standalone terrain simulator. Swing and BufferedImage only, no external
+// dependencies, so it stays launchable and does not rot.
+//
+// This exists because in-game iteration is impractical at Terramax's scale:
+// with plate centres ~100,000 blocks apart you would fly 50,000 blocks to reach
+// a boundary. Run with:
+//
+//     ./gradlew :sim:run
+
+plugins {
+	id 'application'
+}
+
+group = project.maven_group
+version = project.mod_version
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation project(':core')
+}
+
+application {
+	mainClass = 'com.fury.terramax.sim.SimulatorMain'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}

@@ -6,6 +6,12 @@ plugins {
 version = project.mod_version
 group = project.maven_group
 
+// Without this the artifact would be named after the Gradle project, which is
+// now "mod" rather than "terramax".
+base {
+	archivesName = 'terramax'
+}
+
 repositories {
 	// Add repositories to retrieve artifacts from in here.
 	// You should only use this when depending on other mods because
@@ -38,6 +44,11 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Terrain mathematics. Must be bundled into the jar, since players will not
+	// have it on their classpath. See the `include` line and the remapJar config.
+	implementation project(':core')
+	include project(':core')
 }
 
 processResources {
@@ -64,11 +75,9 @@ java {
 }
 
 jar {
-	def projectName = project.name
-	inputs.property "projectName", projectName
-
-	from("LICENSE.txt") {
-		rename { "LICENSE_$projectName"}
+	// LICENSE.txt lives at the repository root, not inside this subproject.
+	from(rootProject.file("LICENSE.txt")) {
+		rename { "LICENSE_terramax" }
 	}
 }
 

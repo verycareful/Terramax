@@ -9,5 +9,14 @@ pluginManagement {
 	}
 }
 
-// Should match your modid
 rootProject.name = 'terramax'
+
+// core : terrain mathematics. NO Minecraft dependency, enforced by the build.
+// sim  : standalone Swing simulator. Depends on core only.
+// mod  : the Fabric mod. Depends on core.
+//
+// The split exists so the simulator provably runs the same code the game runs.
+// See CLAUDE.md.
+include 'core'
+include 'sim'
+include 'mod'
