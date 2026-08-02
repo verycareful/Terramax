@@ -5,15 +5,21 @@ package com.fury.terramax.core.plate;
  * here, so the simulator and the mod cannot drift apart by disagreeing on a
  * constant.
  *
- * @param spacingBlocks        mean distance between plate centres
- * @param jitter               plate centre offset as a fraction of spacing, in [0, 0.5]
- * @param continentalFraction  proportion of plates carrying continent, in [0, 1]
- * @param seaLevel             world Y of sea level
- * @param continentalBase      mean world Y of continental plate interiors
- * @param oceanicBase          mean world Y of ocean floor
- * @param baseVariation        per-plate elevation spread around its type's base, in blocks
- * @param transformDominance   how far shear must exceed convergence before a boundary
- *                             counts as transform rather than convergent or divergent
+ * <p>Lengths that should scale with plate size are expressed as multiples of
+ * {@code spacingBlocks} rather than as absolute distances. Changing plate spacing
+ * then rescales the whole system coherently instead of leaving warp and continent
+ * sizes stranded at their old values.
+ *
+ * @param spacingBlocks             mean distance between plate centres
+ * @param jitter                    plate centre offset as a fraction of spacing, in [0, 0.5]
+ * @param continentalFraction       proportion of plates carrying continent, in [0, 1]
+ * @param seaLevel                  world Y of sea level
+ * @param continentalBase           mean world Y of continental plate interiors
+ * @param oceanicBase               mean world Y of ocean floor
+ * @param baseVariation             per-plate elevation spread around its type's base, in blocks
+ * @param transformDominance        how far shear must exceed convergence for a transform boundary
+ * @param warp                      coordinate displacement, which breaks up the Voronoi geometry
+ * @param continentWavelengthFactor wavelength of the land/ocean field, in plate spacings
  */
 public record PlateMapSettings(
 		double spacingBlocks,
@@ -23,7 +29,29 @@ public record PlateMapSettings(
 		int continentalBase,
 		int oceanicBase,
 		int baseVariation,
-		double transformDominance) {
+		double transformDominance,
+		Warp warp,
+		double continentWavelengthFactor) {
+
+	/**
+	 * Domain warp tuning, in units that scale with plate spacing.
+	 *
+	 * @param strengthFraction displacement as a fraction of plate spacing
+	 * @param wavelengthFactor displacement field wavelength, in plate spacings
+	 * @param octaves          detail in the displacement field
+	 */
+	public record Warp(double strengthFraction, double wavelengthFactor, int octaves) {
+		public Warp {
+			if (strengthFraction < 0.0) {
+				throw new IllegalArgumentException(
+						"strengthFraction must not be negative, got " + strengthFraction);
+			}
+
+			if (octaves < 1) {
+				throw new IllegalArgumentException("octaves must be at least 1, got " + octaves);
+			}
+		}
+	}
 
 	public PlateMapSettings {
 		if (continentalFraction < 0.0 || continentalFraction > 1.0) {
@@ -38,19 +66,37 @@ public record PlateMapSettings(
 		}
 	}
 
+	public double warpStrengthBlocks() {
+		return spacingBlocks * warp.strengthFraction();
+	}
+
+	public double warpWavelengthBlocks() {
+		return spacingBlocks * warp.wavelengthFactor();
+	}
+
+	public double continentWavelengthBlocks() {
+		return spacingBlocks * continentWavelengthFactor;
+	}
+
 	/**
 	 * Defaults for the design's 100,000-block plates in a -256 to 1792 world.
 	 *
 	 * <p>{@code continentalFraction} is 0.62, well above Earth's roughly 0.4, and
 	 * deliberately so. At this spacing a single oceanic plate is 100,000 blocks of
-	 * open water, which is around 55 minutes of elytra flight. Earthlike ocean
-	 * proportions would make the world hostile to cross rather than realistic.
+	 * open water, around 55 minutes of elytra flight. Earthlike ocean proportions
+	 * would make the world hostile to cross rather than realistic.
 	 *
-	 * <p>{@code transformDominance} is 3.0. The share of transform boundaries is
-	 * {@code 1 - (2/pi) * atan(k)}, so k=1 gives 50%, k=3 gives about 20%, and k=4
-	 * about 16%. Earth sits near 15% by boundary length. 3.0 lands close to that
-	 * while leaving convergent and divergent margins, the ones that actually build
-	 * relief, as the clear majority.
+	 * <p>{@code transformDominance} is 3.0. The transform share is
+	 * {@code 1 - (2/pi) * atan(k)}: k=1 gives 50%, k=3 about 20%, k=4 about 16%.
+	 * Earth sits near 15% by boundary length.
+	 *
+	 * <p>Warp strength is 0.22 of spacing, so 22,000 blocks at the default. Large
+	 * enough to make boundaries genuinely sinuous, small enough that a plate is
+	 * still recognisably one region rather than smeared into its neighbours.
+	 *
+	 * <p>{@code continentWavelengthFactor} is 4.0, so land and ocean correlate over
+	 * roughly four plates. That produces continents of several plates rather than
+	 * the salt-and-pepper mixing an independent per-plate coin flip gives.
 	 */
 	public static PlateMapSettings defaults() {
 		return new PlateMapSettings(
@@ -61,24 +107,8 @@ public record PlateMapSettings(
 				112,
 				-96,
 				64,
-				3.0);
-	}
-
-	public PlateMapSettings withSpacing(final double newSpacingBlocks) {
-		return new PlateMapSettings(
-				newSpacingBlocks, jitter, continentalFraction,
-				seaLevel, continentalBase, oceanicBase, baseVariation, transformDominance);
-	}
-
-	public PlateMapSettings withContinentalFraction(final double newContinentalFraction) {
-		return new PlateMapSettings(
-				spacingBlocks, jitter, newContinentalFraction,
-				seaLevel, continentalBase, oceanicBase, baseVariation, transformDominance);
-	}
-
-	public PlateMapSettings withTransformDominance(final double newTransformDominance) {
-		return new PlateMapSettings(
-				spacingBlocks, jitter, continentalFraction,
-				seaLevel, continentalBase, oceanicBase, baseVariation, newTransformDominance);
+				3.0,
+				new Warp(0.22, 1.6, 3),
+				4.0);
 	}
 }

@@ -73,10 +73,8 @@ public final class MapRenderer {
 			}
 		}
 
-		if (layer == Layer.PLATES_WITH_EDGES) {
-			drawSiteMarkers(image, plates, view);
-		}
-
+		// No plate-centre markers. Sites live in warped space, so drawing them at
+		// unwarped screen positions would place them outside their own plates.
 		return image;
 	}
 
