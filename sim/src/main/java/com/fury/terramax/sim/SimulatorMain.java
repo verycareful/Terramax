@@ -12,7 +12,9 @@ import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.plate.PlateType;
-import com.fury.terramax.core.terrain.PlateBaseHeight;
+import com.fury.terramax.core.terrain.HeightField;
+import com.fury.terramax.core.terrain.TerrainHeight;
+import com.fury.terramax.core.terrain.TerrainSettings;
 
 /**
  * Entry point for the standalone terrain simulator.
@@ -77,9 +79,15 @@ public final class SimulatorMain {
 		write("boundary-type-continental", continental, plates, MapRenderer.Layer.BOUNDARY_TYPE);
 		write("boundaries-continental", continental, plates, MapRenderer.Layer.BOUNDARY_DISTANCE);
 		write("plates-local", local, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
-		writeCrossSection(plates, settings);
+
+		TerrainHeight terrain = new TerrainHeight(SEED, plates, TerrainSettings.defaults());
+
+		writeElevation("elevation-continental", continental, terrain, settings);
+		writeElevation("elevation-local", local, terrain, settings);
+		writeCrossSection(terrain, settings);
 
 		printStatistics(plates, continental);
+		printElevationStatistics(terrain, continental, settings);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
@@ -147,12 +155,12 @@ public final class SimulatorMain {
 	 * angles instead of repeatedly hitting them square on.
 	 */
 	private static void writeCrossSection(
-			final PlateMap plates, final PlateMapSettings settings) throws IOException {
+			final HeightField terrain, final PlateMapSettings settings) throws IOException {
 		double reach = settings.spacingBlocks() * CROSS_SECTION_PLATES * 0.5;
 
 		long start = System.nanoTime();
 		var image = CrossSectionPlotter.plot(
-				new PlateBaseHeight(plates),
+				terrain,
 				-reach, -reach * 0.4,
 				reach, reach * 0.4,
 				MIN_Y, MAX_Y,
@@ -164,6 +172,70 @@ public final class SimulatorMain {
 
 		System.out.printf("  %-26s %,10.0f blocks along, y=%d to y=%d,      %4d ms%n",
 				"cross-section", reach * 2.0 * Math.hypot(1.0, 0.4), MIN_Y, MAX_Y, elapsedMs);
+	}
+
+	private static void writeElevation(
+			final String name,
+			final MapView view,
+			final HeightField terrain,
+			final PlateMapSettings settings) throws IOException {
+		long start = System.nanoTime();
+		var image = MapRenderer.renderElevation(terrain, view, MIN_Y, MAX_Y, settings.seaLevel());
+		long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+		ImageIO.write(image, "PNG", OUTPUT_DIR.resolve(name + ".png").toFile());
+
+		System.out.printf("  %-26s %,10.0f blocks across, %,6.0f blocks/pixel, %4d ms%n",
+				name, view.spanBlocks(), view.blocksPerPixel(), elapsedMs);
+	}
+
+	/**
+	 * Reports the elevation range actually produced.
+	 *
+	 * <p>The point is to check the terrain uses the vertical space the dimension is
+	 * paying for. A 2048-block world whose terrain spans 200 blocks is a 5.3x memory
+	 * tax on nothing, and a picture will not tell you that.
+	 */
+	private static void printElevationStatistics(
+			final HeightField terrain, final MapView view, final PlateMapSettings settings) {
+		double step = view.spanBlocks() / STATS_GRID;
+		double origin = -view.spanBlocks() * 0.5;
+
+		double min = Double.MAX_VALUE;
+		double max = -Double.MAX_VALUE;
+		double sum = 0.0;
+		int aboveSea = 0;
+		int aboveThousand = 0;
+		int total = STATS_GRID * STATS_GRID;
+
+		for (int iz = 0; iz < STATS_GRID; iz++) {
+			for (int ix = 0; ix < STATS_GRID; ix++) {
+				double height = terrain.heightAt(
+						view.centreX() + origin + ix * step,
+						view.centreZ() + origin + iz * step);
+
+				min = Math.min(min, height);
+				max = Math.max(max, height);
+				sum += height;
+
+				if (height > settings.seaLevel()) {
+					aboveSea++;
+				}
+
+				if (height > 1000.0) {
+					aboveThousand++;
+				}
+			}
+		}
+
+		System.out.println();
+		System.out.println("Elevation across the continental view:");
+		System.out.printf("  range           y=%,.0f to y=%,.0f%n", min, max);
+		System.out.printf("  mean            y=%,.0f%n", sum / total);
+		System.out.printf("  above sea       %5.1f%%%n", 100.0 * aboveSea / total);
+		System.out.printf("  above y=1000    %5.2f%%%n", 100.0 * aboveThousand / total);
+		System.out.printf("  dimension       y=%d to y=%d, using %.0f%% of it%n",
+				MIN_Y, MAX_Y, 100.0 * (max - min) / (MAX_Y - MIN_Y));
 	}
 
 	private static void write(
