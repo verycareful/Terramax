@@ -29,7 +29,7 @@ public final class WeightedVoronoi {
 	/**
 	 * Exponent applied to the uniform weight draw. Above 1 skews toward zero, so
 	 * most sites are ordinary and a few are enormous. At 3.0 roughly one site in
-	 * eight exceeds half the maximum weight.
+	 * five exceeds half the maximum weight.
 	 */
 	private static final double WEIGHT_SKEW = 3.0;
 
