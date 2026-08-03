@@ -54,6 +54,9 @@ CLAUDE.md
 # Working memory for uncommitted changes (see dev-workflow)
 changes_version.md
 
+# Subagent execution scratch: ledgers, task briefs, review packages
+.superpowers/
+
 # Jars, except the Gradle wrapper which MUST be committed or ./gradlew breaks.
 # The Fabric template ships no *.jar rule, which is how the realworld jars very
 # nearly ended up in history.
