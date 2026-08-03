@@ -5,24 +5,24 @@ package com.fury.terramax.core.plate;
  * here, so the simulator and the mod cannot drift apart by disagreeing on a
  * constant.
  *
- * <p>Lengths that should scale with plate size are expressed as multiples of
- * {@code spacingBlocks} rather than as absolute distances. Changing plate spacing
- * then rescales the whole system coherently instead of leaving warp and continent
- * sizes stranded at their old values.
+ * <p>Lengths that should scale with crust cell size are expressed as multiples of
+ * {@code crustSpacingBlocks} rather than as absolute distances. Changing crust
+ * spacing then rescales the whole system coherently instead of leaving warp and
+ * continent sizes stranded at their old values.
  *
- * @param spacingBlocks             mean distance between plate centres
- * @param jitter                    plate centre offset as a fraction of spacing, in [0, 0.5]
- * @param continentalFraction       proportion of plates carrying continent, in [0, 1]
+ * @param crustSpacingBlocks        mean distance between crust cell centres
+ * @param jitter                    crust cell offset as a fraction of spacing, in [0, 0.5]
+ * @param continentalFraction       proportion of crust carrying continent, in [0, 1]
  * @param seaLevel                  world Y of sea level
- * @param continentalBase           mean world Y of continental plate interiors
+ * @param continentalBase           mean world Y of continental crust interiors
  * @param oceanicBase               mean world Y of ocean floor
- * @param baseVariation             per-plate elevation spread around its type's base, in blocks
+ * @param baseVariation             per-cell elevation spread around its type's base, in blocks
  * @param transformDominance        how far shear must exceed convergence for a transform boundary
  * @param warp                      coordinate displacement, which breaks up the Voronoi geometry
- * @param continentWavelengthFactor wavelength of the land/ocean field, in plate spacings
+ * @param continentWavelengthFactor wavelength of the land/ocean field, in crust spacings
  */
 public record PlateMapSettings(
-		double spacingBlocks,
+		double crustSpacingBlocks,
 		double jitter,
 		double continentalFraction,
 		int seaLevel,
@@ -34,10 +34,10 @@ public record PlateMapSettings(
 		double continentWavelengthFactor) {
 
 	/**
-	 * Domain warp tuning, in units that scale with plate spacing.
+	 * Domain warp tuning, in units that scale with crust spacing.
 	 *
-	 * @param strengthFraction displacement as a fraction of plate spacing
-	 * @param wavelengthFactor displacement field wavelength, in plate spacings
+	 * @param strengthFraction displacement as a fraction of crust spacing
+	 * @param wavelengthFactor displacement field wavelength, in crust spacings
 	 * @param octaves          detail in the displacement field
 	 */
 	public record Warp(double strengthFraction, double wavelengthFactor, int octaves) {
@@ -67,48 +67,46 @@ public record PlateMapSettings(
 	}
 
 	public double warpStrengthBlocks() {
-		return spacingBlocks * warp.strengthFraction();
+		return crustSpacingBlocks * warp.strengthFraction();
 	}
 
 	public double warpWavelengthBlocks() {
-		return spacingBlocks * warp.wavelengthFactor();
+		return crustSpacingBlocks * warp.wavelengthFactor();
 	}
 
 	public double continentWavelengthBlocks() {
-		return spacingBlocks * continentWavelengthFactor;
+		return crustSpacingBlocks * continentWavelengthFactor;
 	}
 
 	/**
-	 * Defaults for the design's 100,000-block plates in a -256 to 1792 world.
+	 * Defaults for a two-lattice world with sea level at 0.
 	 *
-	 * <p>{@code continentalFraction} is 0.62, well above Earth's roughly 0.4, and
-	 * deliberately so. At this spacing a single oceanic plate is 100,000 blocks of
-	 * open water, around 55 minutes of elytra flight. Earthlike ocean proportions
-	 * would make the world hostile to cross rather than realistic.
+	 * <p><b>Sea level is 0, not 64.</b> The 64 was inherited from vanilla rather
+	 * than chosen. Oceans are not worth vertical budget here, so the whole 1,792
+	 * blocks above zero go to land, and as a bonus y now reads directly as altitude
+	 * above sea level, which makes every number in the codebase self-explanatory.
 	 *
-	 * <p>{@code transformDominance} is 3.0. The transform share is
-	 * {@code 1 - (2/pi) * atan(k)}: k=1 gives 50%, k=3 about 20%, k=4 about 16%.
-	 * Earth sits near 15% by boundary length.
+	 * <p>{@code crustSpacingBlocks} is 6,000. This is the granularity of plate
+	 * outlines and of crust type, not the size of a plate: plates are groups of
+	 * these cells. Six thousand means even a small plate is several cells across
+	 * and therefore has a ragged outline rather than being one square.
 	 *
-	 * <p>Warp strength is 0.22 of spacing, so 22,000 blocks at the default. Large
-	 * enough to make boundaries genuinely sinuous, small enough that a plate is
-	 * still recognisably one region rather than smeared into its neighbours.
-	 *
-	 * <p>{@code continentWavelengthFactor} is 4.0, so land and ocean correlate over
-	 * roughly four plates. That produces continents of several plates rather than
-	 * the salt-and-pepper mixing an independent per-plate coin flip gives.
+	 * <p>{@code continentWavelengthFactor} is now expressed in crust spacings and
+	 * has to grow accordingly. At 40.0 the land/ocean field correlates over roughly
+	 * 240,000 blocks, which is the continent-sized scale the old value gave when
+	 * spacing was 100,000.
 	 */
 	public static PlateMapSettings defaults() {
 		return new PlateMapSettings(
-				100_000.0,
+				6_000.0,
 				0.35,
 				0.62,
-				64,
+				0,
 				112,
 				-96,
 				64,
 				3.0,
-				new Warp(0.22, 1.6, 3),
-				4.0);
+				new Warp(2.5, 1.6, 3),
+				40.0);
 	}
 }

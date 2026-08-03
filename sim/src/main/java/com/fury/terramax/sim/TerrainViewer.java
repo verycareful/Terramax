@@ -40,7 +40,7 @@ public final class TerrainViewer extends JFrame {
 	private final transient ViewerPanel viewer;
 
 	private long seed;
-	private double spacingBlocks;
+	private double crustSpacingBlocks;
 	private double continentalFraction;
 	private double warpStrengthFraction;
 	private double transformDominance;
@@ -50,13 +50,13 @@ public final class TerrainViewer extends JFrame {
 		super("Terramax terrain simulator");
 
 		this.seed = initialSeed;
-		this.spacingBlocks = initial.spacingBlocks();
+		this.crustSpacingBlocks = initial.crustSpacingBlocks();
 		this.continentalFraction = initial.continentalFraction();
 		this.warpStrengthFraction = initial.warp().strengthFraction();
 		this.transformDominance = initial.transformDominance();
 		this.continentWavelengthFactor = initial.continentWavelengthFactor();
 
-		this.viewer = new ViewerPanel(this::buildPlateMap, spacingBlocks * 8.0);
+		this.viewer = new ViewerPanel(this::buildPlateMap, crustSpacingBlocks * 140.0);
 
 		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 		setLayout(new BorderLayout());
@@ -74,7 +74,7 @@ public final class TerrainViewer extends JFrame {
 	 */
 	private PlateMap buildPlateMap() {
 		PlateMapSettings settings = new PlateMapSettings(
-				spacingBlocks,
+				crustSpacingBlocks,
 				PlateMapSettings.defaults().jitter(),
 				continentalFraction,
 				PlateMapSettings.defaults().seaLevel(),
@@ -100,9 +100,9 @@ public final class TerrainViewer extends JFrame {
 		panel.add(layerSelector());
 		panel.add(seedSpinner());
 
-		panel.add(slider("plate spacing", 10_000, 400_000, (int) spacingBlocks,
+		panel.add(slider("crust spacing", 2_000, 20_000, (int) crustSpacingBlocks,
 				value -> {
-					spacingBlocks = value;
+					crustSpacingBlocks = value;
 					return String.format("%,d blocks", value);
 				}));
 
@@ -113,12 +113,12 @@ public final class TerrainViewer extends JFrame {
 					return value + "%";
 				}));
 
-		panel.add(slider("warp strength", 0, 60,
+		panel.add(slider("warp strength", 0, 600,
 				(int) Math.round(warpStrengthFraction * PERCENT_SCALE),
 				value -> {
 					warpStrengthFraction = value / (double) PERCENT_SCALE;
 					return String.format("%d%% of spacing (%,.0f blocks)",
-							value, spacingBlocks * warpStrengthFraction);
+							value, crustSpacingBlocks * warpStrengthFraction);
 				}));
 
 		panel.add(slider("transform dominance", PERCENT_SCALE, 8 * PERCENT_SCALE,

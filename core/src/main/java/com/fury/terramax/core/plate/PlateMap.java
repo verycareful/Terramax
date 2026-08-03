@@ -55,8 +55,8 @@ public final class PlateMap {
 	 */
 	private static final int CALIBRATION_GRID = 64;
 
-	/** Area calibrated over, in plate spacings. Wide enough to span many continents. */
-	private static final double CALIBRATION_SPAN_FACTOR = 64.0;
+	/** Area calibrated over, in crust spacings. Wide enough to span many continents. */
+	private static final double CALIBRATION_SPAN_FACTOR = 640.0;
 
 	private final long seed;
 	private final PlateMapSettings settings;
@@ -69,7 +69,7 @@ public final class PlateMap {
 		this.seed = seed;
 		this.settings = settings;
 		this.voronoi = new VoronoiSolver(
-				new PoissonDisk(seed, settings.spacingBlocks(), settings.jitter()));
+				new PoissonDisk(seed, settings.crustSpacingBlocks(), settings.jitter()));
 		this.warp = new DomainWarp(
 				seed,
 				settings.warpStrengthBlocks(),
@@ -95,7 +95,7 @@ public final class PlateMap {
 	 */
 	private double calibrateContinentThreshold() {
 		double[] samples = new double[CALIBRATION_GRID * CALIBRATION_GRID];
-		double span = settings.spacingBlocks() * CALIBRATION_SPAN_FACTOR;
+		double span = settings.crustSpacingBlocks() * CALIBRATION_SPAN_FACTOR;
 		double step = span / CALIBRATION_GRID;
 
 		int index = 0;
@@ -126,39 +126,43 @@ public final class PlateMap {
 	}
 
 	/**
-	 * The plate owning the given cell. Pure function of seed and coordinate.
+	 * The crust cell with the given identity. Pure function of seed and coordinate.
 	 *
-	 * <p>Type comes from a low-frequency field sampled at the plate's centre, not
-	 * from an independent per-plate draw. An independent draw makes each plate flip
-	 * its own coin, which mixes land and ocean uniformly and produces isolated seas
-	 * ringed by land instead of continents and oceans.
+	 * <p>Crust type comes from a low-frequency field sampled at the cell's site,
+	 * not from an independent per-cell draw. An independent draw makes each cell
+	 * flip its own coin, which mixes land and ocean uniformly and gives isolated
+	 * seas ringed by land instead of continents and oceans.
 	 */
-	public Plate plateAt(final long cellX, final long cellZ) {
+	public CrustCell crustCellAt(final long cellX, final long cellZ) {
 		double siteX = voronoi.sites().pointX(cellX, cellZ);
 		double siteZ = voronoi.sites().pointZ(cellX, cellZ);
 
-		PlateType type = continentField.sampleUnit(siteX, siteZ) < continentThreshold
-				? PlateType.CONTINENTAL
-				: PlateType.OCEANIC;
+		CrustType type = continentField.sampleUnit(siteX, siteZ) < continentThreshold
+				? CrustType.CONTINENTAL
+				: CrustType.OCEANIC;
 
-		int base = type == PlateType.CONTINENTAL
+		int base = type == CrustType.CONTINENTAL
 				? settings.continentalBase()
 				: settings.oceanicBase();
 
-		// Centred on the type's base, spread across +/- baseVariation.
 		double variation = (Hashing.unitDouble(seed, cellX, cellZ, SALT_ELEVATION) - 0.5)
 				* 2.0 * settings.baseVariation();
 
+		return new CrustCell(cellX, cellZ, siteX, siteZ, type, base + variation);
+	}
+
+	/**
+	 * The plate owning the given crust cell.
+	 *
+	 * <p>In this build every crust cell is its own plate. Task 3 replaces this with
+	 * a lookup against the nuclei lattice so that many cells share one plate.
+	 */
+	public Plate plateOf(final long cellX, final long cellZ) {
 		double angle = Hashing.unitDouble(seed, cellX, cellZ, SALT_MOTION_ANGLE) * Math.TAU;
 		double speed = MIN_MOTION_SPEED
 				+ (1.0 - MIN_MOTION_SPEED) * Hashing.unitDouble(seed, cellX, cellZ, SALT_MOTION_SPEED);
 
-		return new Plate(
-				cellX, cellZ,
-				type,
-				base + variation,
-				Math.cos(angle) * speed,
-				Math.sin(angle) * speed);
+		return new Plate(cellX, cellZ, Math.cos(angle) * speed, Math.sin(angle) * speed);
 	}
 
 	/**
@@ -171,8 +175,11 @@ public final class PlateMap {
 
 		VoronoiSample cell = voronoi.sample(queryX, queryZ);
 
-		Plate plate = plateAt(cell.cellX(), cell.cellZ());
-		Plate neighbour = plateAt(cell.neighbourCellX(), cell.neighbourCellZ());
+		Plate plate = plateOf(cell.cellX(), cell.cellZ());
+		Plate neighbour = plateOf(cell.neighbourCellX(), cell.neighbourCellZ());
+
+		CrustCell crust = crustCellAt(cell.cellX(), cell.cellZ());
+		CrustCell neighbourCrust = crustCellAt(cell.neighbourCellX(), cell.neighbourCellZ());
 
 		double neighbourX = voronoi.sites().pointX(cell.neighbourCellX(), cell.neighbourCellZ());
 		double neighbourZ = voronoi.sites().pointZ(cell.neighbourCellX(), cell.neighbourCellZ());
@@ -183,7 +190,8 @@ public final class PlateMap {
 
 		if (axisLength == 0.0) {
 			return new PlateSample(
-					plate, neighbour, PlateBoundaryType.TRANSFORM, cell.boundaryDistance(), 0.0, 0.0);
+					plate, neighbour, crust, neighbourCrust,
+					PlateBoundaryType.TRANSFORM, cell.boundaryDistance(), 0.0, 0.0);
 		}
 
 		// Unit normal pointing from this plate toward its neighbour, and the
@@ -212,6 +220,8 @@ public final class PlateMap {
 			type = convergence > 0.0 ? PlateBoundaryType.CONVERGENT : PlateBoundaryType.DIVERGENT;
 		}
 
-		return new PlateSample(plate, neighbour, type, cell.boundaryDistance(), convergence, shear);
+		return new PlateSample(
+				plate, neighbour, crust, neighbourCrust,
+				type, cell.boundaryDistance(), convergence, shear);
 	}
 }

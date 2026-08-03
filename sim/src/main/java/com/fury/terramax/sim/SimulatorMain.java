@@ -8,10 +8,10 @@ import java.util.Map;
 
 import javax.imageio.ImageIO;
 
+import com.fury.terramax.core.plate.CrustType;
 import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
-import com.fury.terramax.core.plate.PlateType;
 import com.fury.terramax.core.terrain.HeightField;
 import com.fury.terramax.core.terrain.TerrainHeight;
 import com.fury.terramax.core.terrain.TerrainSettings;
@@ -32,17 +32,17 @@ public final class SimulatorMain {
 	private static final long SEED = 1L;
 	private static final int IMAGE_PIXELS = 1024;
 
-	/** Wide enough to hold roughly 8x8 plates. */
-	private static final double CONTINENTAL_SPAN_PLATES = 8.0;
+	/** Wide enough to hold roughly 8x8 plates, which is many crust cells. */
+	private static final double CONTINENTAL_SPAN_CELLS = 140.0;
 
 	/** Roughly one plate, to inspect a single boundary. */
-	private static final double LOCAL_SPAN_PLATES = 1.5;
+	private static final double LOCAL_SPAN_CELLS = 24.0;
 
 	/** Sample count for the statistics summary. Large enough for stable proportions. */
 	private static final int STATS_GRID = 400;
 
-	/** Plates crossed by the section. Enough to show several boundaries in one profile. */
-	private static final double CROSS_SECTION_PLATES = 6.0;
+	/** Crust cells crossed by the section. Enough to show several boundaries in one profile. */
+	private static final double CROSS_SECTION_CELLS = 100.0;
 
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
@@ -70,9 +70,9 @@ public final class SimulatorMain {
 
 		Files.createDirectories(OUTPUT_DIR);
 
-		double spacing = settings.spacingBlocks();
-		MapView continental = new MapView(0, 0, spacing * CONTINENTAL_SPAN_PLATES, IMAGE_PIXELS);
-		MapView local = new MapView(0, 0, spacing * LOCAL_SPAN_PLATES, IMAGE_PIXELS);
+		double spacing = settings.crustSpacingBlocks();
+		MapView continental = new MapView(0, 0, spacing * CONTINENTAL_SPAN_CELLS, IMAGE_PIXELS);
+		MapView local = new MapView(0, 0, spacing * LOCAL_SPAN_CELLS, IMAGE_PIXELS);
 
 		write("plates-continental", continental, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
 		write("plate-type-continental", continental, plates, MapRenderer.Layer.PLATE_TYPE);
@@ -96,7 +96,7 @@ public final class SimulatorMain {
 	private static void printConfiguration(final PlateMapSettings settings, final PlateMap plates) {
 		System.out.println("Terramax terrain simulator");
 		System.out.printf("  seed                %d%n", SEED);
-		System.out.printf("  plate spacing       %,.0f blocks%n", settings.spacingBlocks());
+		System.out.printf("  crust spacing       %,.0f blocks%n", settings.crustSpacingBlocks());
 		System.out.printf("  jitter              %.2f%n", settings.jitter());
 		System.out.printf("  min separation      %,.0f blocks%n",
 				plates.voronoi().sites().minimumSeparation());
@@ -116,7 +116,7 @@ public final class SimulatorMain {
 	 * the maths produces, which a picture will not reveal.
 	 */
 	private static void printStatistics(final PlateMap plates, final MapView view) {
-		Map<PlateType, Integer> byType = new EnumMap<>(PlateType.class);
+		Map<CrustType, Integer> byType = new EnumMap<>(CrustType.class);
 		Map<PlateBoundaryType, Integer> byBoundary = new EnumMap<>(PlateBoundaryType.class);
 
 		double step = view.spanBlocks() / STATS_GRID;
@@ -129,7 +129,7 @@ public final class SimulatorMain {
 						view.centreX() + origin + ix * step,
 						view.centreZ() + origin + iz * step);
 
-				byType.merge(sample.plate().type(), 1, Integer::sum);
+				byType.merge(sample.crust().crustType(), 1, Integer::sum);
 				byBoundary.merge(sample.boundaryType(), 1, Integer::sum);
 			}
 		}
@@ -137,7 +137,7 @@ public final class SimulatorMain {
 		System.out.println();
 		System.out.printf("Sampled %,d points across the continental view:%n", total);
 
-		for (PlateType type : PlateType.values()) {
+		for (CrustType type : CrustType.values()) {
 			System.out.printf("  %-12s %5.1f%% of area%n",
 					type, 100.0 * byType.getOrDefault(type, 0) / total);
 		}
@@ -156,7 +156,7 @@ public final class SimulatorMain {
 	 */
 	private static void writeCrossSection(
 			final HeightField terrain, final PlateMapSettings settings) throws IOException {
-		double reach = settings.spacingBlocks() * CROSS_SECTION_PLATES * 0.5;
+		double reach = settings.crustSpacingBlocks() * CROSS_SECTION_CELLS * 0.5;
 
 		long start = System.nanoTime();
 		var image = CrossSectionPlotter.plot(

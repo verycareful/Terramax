@@ -1,45 +1,50 @@
 package com.fury.terramax.core.plate;
 
 /**
- * Everything the terrain functions need to know about one world position.
+ * What the plate system knows about one world position.
  *
- * @param plate             the plate that owns this position
- * @param neighbour         the plate across the nearest boundary
- * @param boundaryType      what those two plates are doing to each other
- * @param boundaryDistance  perpendicular distance to that boundary, in blocks
- * @param convergence       signed closing rate along the boundary normal; positive
- *                          means converging, negative diverging
- * @param shear             magnitude of sliding motion along the boundary
+ * <p>Carries both the plate, which supplies motion and therefore boundary
+ * behaviour, and the crust cell, which supplies crust type and base elevation.
+ * They are separate because a plate holds many cells of both kinds.
+ *
+ * <p>{@code neighbourCrust} is the crust immediately across the boundary rather
+ * than the neighbouring plate's type, because a plate no longer has one type. A
+ * subduction zone is defined by ocean meeting continent at a specific place, not
+ * by the average composition of two plates.
+ *
+ * @param plate            plate owning this position
+ * @param neighbour        plate across the nearest boundary
+ * @param crust            crust cell this position sits in
+ * @param neighbourCrust   crust cell immediately across the boundary
+ * @param boundaryType     what the two plates are doing to each other
+ * @param boundaryDistance blocks to the nearest plate boundary
+ * @param convergence      closing speed along the boundary normal; positive closes
+ * @param shear            sliding speed along the boundary
  */
 public record PlateSample(
 		Plate plate,
 		Plate neighbour,
+		CrustCell crust,
+		CrustCell neighbourCrust,
 		PlateBoundaryType boundaryType,
 		double boundaryDistance,
 		double convergence,
 		double shear) {
 
-	/**
-	 * True where an oceanic plate is being driven under a continental one.
-	 *
-	 * <p>The two sides of a subduction zone are not symmetric: the continental side
-	 * rises into a mountain arc, the oceanic side drops into a trench. Terrain
-	 * functions need to know which side they are standing on.
-	 */
+	/** True where oceanic crust is being driven under continental. */
 	public boolean isSubducting() {
 		return boundaryType == PlateBoundaryType.CONVERGENT
-				&& plate.type() != neighbour.type();
+				&& crust.isContinental() != neighbourCrust.isContinental();
 	}
 
-	/** True on the overriding (continental) side of a subduction zone. */
-	public boolean isOverridingPlate() {
-		return isSubducting() && plate.isContinental();
-	}
-
-	/** True where two continental plates collide, which is how the largest ranges form. */
+	/** True where two continental masses collide, which builds the tallest ranges. */
 	public boolean isContinentalCollision() {
 		return boundaryType == PlateBoundaryType.CONVERGENT
-				&& plate.isContinental()
-				&& neighbour.isContinental();
+				&& crust.isContinental() && neighbourCrust.isContinental();
+	}
+
+	/** True on the upper plate of a subduction zone, which gains an arc rather than a trench. */
+	public boolean isOverridingPlate() {
+		return crust.isContinental();
 	}
 }

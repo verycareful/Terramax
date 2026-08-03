@@ -138,7 +138,7 @@ public final class MapRenderer {
 	public static BufferedImage render(final PlateMap plates, final MapView view, final Layer layer) {
 		BufferedImage image = new BufferedImage(view.pixels(), view.pixels(), BufferedImage.TYPE_INT_RGB);
 
-		double spacing = plates.settings().spacingBlocks();
+		double spacing = plates.settings().crustSpacingBlocks();
 		double interiorDistance = spacing * INTERIOR_FRACTION;
 		double edgeLineBlocks = Math.max(EDGE_LINE_BLOCKS, view.blocksPerPixel());
 
@@ -201,16 +201,16 @@ public final class MapRenderer {
 			return Color.BLACK.getRGB();
 		}
 
-		Color base = sample.plate().isContinental() ? LAND : OCEAN;
+		Color base = sample.crust().isContinental() ? LAND : OCEAN;
 
-		int typeBase = sample.plate().isContinental()
+		int typeBase = sample.crust().isContinental()
 				? plates.settings().continentalBase()
 				: plates.settings().oceanicBase();
 
 		double variation = plates.settings().baseVariation();
 		double offset = variation == 0.0
 				? 0.5
-				: clamp01((sample.plate().baseElevation() - typeBase + variation) / (2.0 * variation));
+				: clamp01((sample.crust().baseElevation() - typeBase + variation) / (2.0 * variation));
 
 		return scale(base, 0.70 + 0.55 * offset).getRGB();
 	}

@@ -1,28 +1,18 @@
 package com.fury.terramax.core.plate;
 
 /**
- * One tectonic plate.
+ * A tectonic plate: an identity and a motion vector.
  *
- * <p>Purely derived: every field is a pure function of the world seed and the
- * plate's cell coordinate. Nothing is stored or persisted, so two plates with the
- * same coordinates in the same world are always identical.
+ * <p>Deliberately thin. A plate no longer carries crust type or elevation,
+ * because both are now properties of the crust cells it owns rather than of the
+ * plate itself. What remains is what a plate actually is at this scale: something
+ * that moves as a unit, and therefore something that can converge with, diverge
+ * from, or slide past its neighbours.
  *
- * @param cellX         cell column, part of the plate's identity
- * @param cellZ         cell row, part of the plate's identity
- * @param type          continent or ocean floor
- * @param baseElevation mean world Y of this plate's interior
- * @param motionX       x component of plate motion, unit-scaled
- * @param motionZ       z component of plate motion, unit-scaled
+ * @param cellX   nucleus lattice column identifying this plate
+ * @param cellZ   nucleus lattice row identifying this plate
+ * @param motionX x component of motion, magnitude in [0, 1]
+ * @param motionZ z component of motion, magnitude in [0, 1]
  */
-public record Plate(
-		long cellX,
-		long cellZ,
-		PlateType type,
-		double baseElevation,
-		double motionX,
-		double motionZ) {
-
-	public boolean isContinental() {
-		return type == PlateType.CONTINENTAL;
-	}
+public record Plate(long cellX, long cellZ, double motionX, double motionZ) {
 }

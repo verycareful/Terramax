@@ -71,7 +71,7 @@ public final class MountainRidge {
 	private double peakRelief(final PlateSample sample) {
 		return switch (sample.boundaryType()) {
 			case CONVERGENT -> convergentRelief(sample);
-			case DIVERGENT -> sample.plate().isContinental()
+			case DIVERGENT -> sample.crust().isContinental()
 					? settings.continentalRiftDrop()
 					: settings.oceanicRidgeRise();
 			case TRANSFORM -> settings.transformRelief();

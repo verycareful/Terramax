@@ -58,14 +58,14 @@ public final class TerrainHeight implements HeightField {
 	public TerrainHeight(final long seed, final PlateMap plates, final TerrainSettings settings) {
 		this.plates = plates;
 		this.settings = settings;
-		this.ridge = new MountainRidge(seed, settings, plates.settings().spacingBlocks());
+		this.ridge = new MountainRidge(seed, settings, plates.settings().crustSpacingBlocks());
 		this.detail = FractalNoise2D.standard(seed ^ SALT_DETAIL, DETAIL_OCTAVES, settings.detailWavelength());
 		this.valleys = FractalNoise2D.standard(seed ^ SALT_VALLEY, VALLEY_OCTAVES, settings.valleyWavelength());
 		this.interiorRelief = FractalNoise2D.standard(
 				seed ^ SALT_INTERIOR,
 				INTERIOR_OCTAVES,
-				plates.settings().spacingBlocks() * settings.interiorReliefFraction());
-		this.blendWidthBlocks = settings.blendWidthBlocks(plates.settings().spacingBlocks());
+				plates.settings().crustSpacingBlocks() * settings.interiorReliefFraction());
+		this.blendWidthBlocks = settings.blendWidthBlocks(plates.settings().crustSpacingBlocks());
 		this.seaLevel = plates.settings().seaLevel();
 	}
 
@@ -108,7 +108,7 @@ public final class TerrainHeight implements HeightField {
 	private double interiorRelief(
 			final PlateSample sample, final double interiority,
 			final double worldX, final double worldZ) {
-		if (!sample.plate().isContinental()) {
+		if (!sample.crust().isContinental()) {
 			return 0.0;
 		}
 
@@ -126,8 +126,8 @@ public final class TerrainHeight implements HeightField {
 	 * across it regardless of which side is queried.
 	 */
 	private double blendedBase(final PlateSample sample, final double interiority) {
-		double own = sample.plate().baseElevation();
-		double neighbour = sample.neighbour().baseElevation();
+		double own = sample.crust().baseElevation();
+		double neighbour = sample.neighbourCrust().baseElevation();
 		double midpoint = (own + neighbour) * 0.5;
 
 		return midpoint + (own - midpoint) * interiority;
