@@ -41,6 +41,8 @@ public final class TerrainViewer extends JFrame {
 
 	private long seed;
 	private double crustSpacingBlocks;
+	private double nucleiSpacingBlocks;
+	private double nucleiMaxWeightFactor;
 	private double continentalFraction;
 	private double warpStrengthFraction;
 	private double transformDominance;
@@ -51,6 +53,8 @@ public final class TerrainViewer extends JFrame {
 
 		this.seed = initialSeed;
 		this.crustSpacingBlocks = initial.crustSpacingBlocks();
+		this.nucleiSpacingBlocks = initial.nucleiSpacingBlocks();
+		this.nucleiMaxWeightFactor = initial.nucleiMaxWeightFactor();
 		this.continentalFraction = initial.continentalFraction();
 		this.warpStrengthFraction = initial.warp().strengthFraction();
 		this.transformDominance = initial.transformDominance();
@@ -75,6 +79,8 @@ public final class TerrainViewer extends JFrame {
 	private PlateMap buildPlateMap() {
 		PlateMapSettings settings = new PlateMapSettings(
 				crustSpacingBlocks,
+				nucleiSpacingBlocks,
+				nucleiMaxWeightFactor,
 				PlateMapSettings.defaults().jitter(),
 				continentalFraction,
 				PlateMapSettings.defaults().seaLevel(),
@@ -106,6 +112,20 @@ public final class TerrainViewer extends JFrame {
 					return String.format("%,d blocks", value);
 				}));
 
+		panel.add(slider("nuclei spacing", 10_000, 200_000, (int) nucleiSpacingBlocks,
+				value -> {
+					nucleiSpacingBlocks = value;
+					return String.format("%,d blocks", value);
+				}));
+
+		panel.add(slider("nuclei weight", 0, 3 * PERCENT_SCALE,
+				(int) Math.round(nucleiMaxWeightFactor * PERCENT_SCALE),
+				value -> {
+					nucleiMaxWeightFactor = value / (double) PERCENT_SCALE;
+					return String.format("%.2fx spacing (%,.0f blocks)",
+							nucleiMaxWeightFactor, nucleiSpacingBlocks * nucleiMaxWeightFactor);
+				}));
+
 		panel.add(slider("continental fraction", 0, PERCENT_SCALE,
 				(int) Math.round(continentalFraction * PERCENT_SCALE),
 				value -> {
@@ -135,7 +155,8 @@ public final class TerrainViewer extends JFrame {
 					return String.format("%.1f plates", continentWavelengthFactor);
 				}));
 
-		panel.add(new JLabel("<html><br>drag to pan<br>scroll to zoom</html>"));
+		panel.add(new JLabel("<html><br>drag to pan<br>scroll to zoom"
+				+ "<br><br>high nuclei weight is slow:<br>the search grid grows with it</html>"));
 
 		return panel;
 	}

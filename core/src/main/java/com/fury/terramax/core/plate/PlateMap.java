@@ -6,6 +6,7 @@ import com.fury.terramax.core.util.Hashing;
 import com.fury.terramax.core.util.PoissonDisk;
 import com.fury.terramax.core.util.VoronoiSample;
 import com.fury.terramax.core.util.VoronoiSolver;
+import com.fury.terramax.core.util.WeightedVoronoi;
 
 /**
  * Resolves world positions to plates, and classifies what happens where plates
@@ -37,6 +38,9 @@ public final class PlateMap {
 	/** Separates the continent field from the warp fields. */
 	private static final long SALT_CONTINENT = 0x6A09E667F3BCC909L;
 
+	/** Keeps the nuclei lattice's jitter independent of the crust lattice's. */
+	private static final long SALT_NUCLEI = 0x8EBC6AF09C88C6E3L;
+
 	/**
 	 * Slowest a plate may move, as a fraction of the fastest.
 	 *
@@ -61,6 +65,7 @@ public final class PlateMap {
 	private final long seed;
 	private final PlateMapSettings settings;
 	private final VoronoiSolver voronoi;
+	private final WeightedVoronoi nuclei;
 	private final DomainWarp warp;
 	private final FractalNoise2D continentField;
 	private final double continentThreshold;
@@ -70,6 +75,10 @@ public final class PlateMap {
 		this.settings = settings;
 		this.voronoi = new VoronoiSolver(
 				new PoissonDisk(seed, settings.crustSpacingBlocks(), settings.jitter()));
+		this.nuclei = new WeightedVoronoi(
+				new PoissonDisk(seed ^ SALT_NUCLEI, settings.nucleiSpacingBlocks(), settings.jitter()),
+				seed ^ SALT_NUCLEI,
+				settings.nucleiMaxWeightBlocks());
 		this.warp = new DomainWarp(
 				seed,
 				settings.warpStrengthBlocks(),
@@ -121,6 +130,10 @@ public final class PlateMap {
 		return voronoi;
 	}
 
+	public WeightedVoronoi nuclei() {
+		return nuclei;
+	}
+
 	public DomainWarp warp() {
 		return warp;
 	}
@@ -152,17 +165,33 @@ public final class PlateMap {
 	}
 
 	/**
-	 * The plate owning the given crust cell.
+	 * The plate owning a crust cell.
 	 *
-	 * <p>In this build every crust cell is its own plate. Task 3 replaces this with
-	 * a lookup against the nuclei lattice so that many cells share one plate.
+	 * <p>Membership is decided by which weighted nucleus wins at the cell's
+	 * <em>site</em>, not at the query position. Using the site means every point in
+	 * a crust cell agrees on its plate, so plate outlines follow crust cell edges
+	 * and come out ragged. Deciding per position instead would give plate
+	 * boundaries their own independent smooth geometry, and the crust lattice would
+	 * stop being the unit of outline granularity that it exists to be.
+	 *
+	 * <p>Motion is hashed from the <em>nucleus</em>, not from the crust cell, which
+	 * is what makes a plate move as one body. Hashing it per cell would give every
+	 * cell in a plate its own velocity, which is not a plate at all.
 	 */
-	public Plate plateOf(final long cellX, final long cellZ) {
-		double angle = Hashing.unitDouble(seed, cellX, cellZ, SALT_MOTION_ANGLE) * Math.TAU;
-		double speed = MIN_MOTION_SPEED
-				+ (1.0 - MIN_MOTION_SPEED) * Hashing.unitDouble(seed, cellX, cellZ, SALT_MOTION_SPEED);
+	public Plate plateOf(final long crustCellX, final long crustCellZ) {
+		double siteX = voronoi.sites().pointX(crustCellX, crustCellZ);
+		double siteZ = voronoi.sites().pointZ(crustCellX, crustCellZ);
 
-		return new Plate(cellX, cellZ, Math.cos(angle) * speed, Math.sin(angle) * speed);
+		WeightedVoronoi.Nearest owner = nuclei.nearest(siteX, siteZ);
+
+		double angle = Hashing.unitDouble(seed, owner.cellX(), owner.cellZ(), SALT_MOTION_ANGLE)
+				* Math.TAU;
+		double speed = MIN_MOTION_SPEED + (1.0 - MIN_MOTION_SPEED)
+				* Hashing.unitDouble(seed, owner.cellX(), owner.cellZ(), SALT_MOTION_SPEED);
+
+		return new Plate(
+				owner.cellX(), owner.cellZ(),
+				Math.cos(angle) * speed, Math.sin(angle) * speed);
 	}
 
 	/**
@@ -180,6 +209,26 @@ public final class PlateMap {
 
 		CrustCell crust = crustCellAt(cell.cellX(), cell.cellZ());
 		CrustCell neighbourCrust = crustCellAt(cell.neighbourCellX(), cell.neighbourCellZ());
+
+		// A seam between two crust cells of the same plate is not a plate boundary
+		// and must build nothing. This is what stops every cell edge in the world
+		// growing a mountain range now that cells are 6,000 blocks apart rather than
+		// 100,000, and it is most of the "not every plate pair needs a range" problem
+		// solved structurally rather than by a hashed activity factor.
+		//
+		// In the full design these seams are sutures and carry worn relief scaled by
+		// a hashed age. That is a later slice; here they carry nothing.
+		//
+		// Reporting an effectively infinite boundary distance keeps every downstream
+		// falloff at zero without any of them needing a special case: smoothstep
+		// clamps to 1, and MountainRidge returns 0 past its range width.
+		if (plate.cellX() == neighbour.cellX() && plate.cellZ() == neighbour.cellZ()) {
+			return new PlateSample(
+					plate, neighbour, crust, neighbourCrust,
+					PlateBoundaryType.NONE,
+					Double.MAX_VALUE,
+					0.0, 0.0);
+		}
 
 		double neighbourX = voronoi.sites().pointX(cell.neighbourCellX(), cell.neighbourCellZ());
 		double neighbourZ = voronoi.sites().pointZ(cell.neighbourCellX(), cell.neighbourCellZ());

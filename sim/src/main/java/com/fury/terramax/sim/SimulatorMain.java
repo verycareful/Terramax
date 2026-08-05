@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.Map;
 
 import javax.imageio.ImageIO;
@@ -38,6 +39,14 @@ public final class SimulatorMain {
 
 	/** Sample count for the statistics summary. Large enough for stable proportions. */
 	private static final int STATS_GRID = 400;
+
+	/**
+	 * Folds a plate's two cell coordinates into one map key.
+	 *
+	 * <p>An odd multiplier, so distinct (x, z) pairs cannot collide by cancelling.
+	 * This is a bucketing key for a statistic, not a hash anything depends on.
+	 */
+	private static final long PLATE_KEY_MIX = 0x9E3779B97F4A7C15L;
 
 	/** Crust cells crossed by the section. Enough to show several boundaries in one profile. */
 	private static final double CROSS_SECTION_CELLS = 100.0;
@@ -85,6 +94,7 @@ public final class SimulatorMain {
 		writeCrossSection(terrain, settings);
 
 		printStatistics(plates, continental);
+		printPlateSizes(plates, continental);
 		printElevationStatistics(terrain, continental, settings);
 
 		System.out.println();
@@ -95,6 +105,12 @@ public final class SimulatorMain {
 		System.out.println("Terramax terrain simulator");
 		System.out.printf("  seed                %d%n", SEED);
 		System.out.printf("  crust spacing       %,.0f blocks%n", settings.crustSpacingBlocks());
+		System.out.printf("  nuclei spacing      %,.0f blocks%n", settings.nucleiSpacingBlocks());
+		System.out.printf("  nuclei max weight   %,.0f blocks (%.2fx spacing)%n",
+				settings.nucleiMaxWeightBlocks(), settings.nucleiMaxWeightFactor());
+		System.out.printf("  nuclei search       %dx%d cells%n",
+				plates.nuclei().searchRadiusCells() * 2 + 1,
+				plates.nuclei().searchRadiusCells() * 2 + 1);
 		System.out.printf("  jitter              %.2f%n", settings.jitter());
 		System.out.printf("  min separation      %,.0f blocks%n",
 				plates.voronoi().sites().minimumSeparation());
@@ -140,10 +156,66 @@ public final class SimulatorMain {
 					type, 100.0 * byType.getOrDefault(type, 0) / total);
 		}
 
+		// Most of the world is plate interior, so a share of total area says little
+		// about the boundary mix. Report both: the interior share, then the split
+		// among real boundaries, which is what compares to Earth's roughly 35/50/15.
+		int interior = byBoundary.getOrDefault(PlateBoundaryType.NONE, 0);
+		int boundaries = total - interior;
+
+		System.out.printf("  %-12s %5.1f%% of area is plate interior%n",
+				PlateBoundaryType.NONE, 100.0 * interior / total);
+
 		for (PlateBoundaryType type : PlateBoundaryType.values()) {
-			System.out.printf("  %-12s %5.1f%% of boundaries by nearest%n",
-					type, 100.0 * byBoundary.getOrDefault(type, 0) / total);
+			if (type == PlateBoundaryType.NONE) {
+				continue;
+			}
+
+			System.out.printf("  %-12s %5.1f%% of real boundaries%n",
+					type, boundaries == 0 ? 0.0 : 100.0 * byBoundary.getOrDefault(type, 0) / boundaries);
 		}
+	}
+
+	/**
+	 * Measures the actual spread of plate sizes.
+	 *
+	 * <p>An order-of-magnitude size range is the entire point of weighting the
+	 * nuclei, and no map will tell you whether you got one: a picture of plates that
+	 * all differ by 20% looks much like a picture of plates that differ by 10x.
+	 *
+	 * <p>Counts sampled area per plate and converts to an equivalent width, so the
+	 * numbers are directly comparable with the design target of 10,000 to 100,000
+	 * blocks. Plates clipped by the view edge understate their size, which is why
+	 * this reports the distribution rather than a mean those would drag down.
+	 */
+	private static void printPlateSizes(final PlateMap plates, final MapView view) {
+		Map<Long, Integer> areaByPlate = new HashMap<>();
+
+		double step = view.spanBlocks() / STATS_GRID;
+		double origin = -view.spanBlocks() * 0.5;
+		double blocksPerSample = step * step;
+
+		for (int iz = 0; iz < STATS_GRID; iz++) {
+			for (int ix = 0; ix < STATS_GRID; ix++) {
+				var plate = plates.sample(
+						view.centreX() + origin + ix * step,
+						view.centreZ() + origin + iz * step).plate();
+
+				areaByPlate.merge(
+						plate.cellX() * PLATE_KEY_MIX + plate.cellZ(), 1, Integer::sum);
+			}
+		}
+
+		double[] widths = areaByPlate.values().stream()
+				.mapToDouble(count -> Math.sqrt(count * blocksPerSample))
+				.sorted()
+				.toArray();
+
+		System.out.println();
+		System.out.printf("Plates in view: %d%n", widths.length);
+		System.out.printf("  smallest        %,.0f blocks across%n", widths[0]);
+		System.out.printf("  median          %,.0f blocks across%n", widths[widths.length / 2]);
+		System.out.printf("  largest         %,.0f blocks across%n", widths[widths.length - 1]);
+		System.out.printf("  ratio           %.1fx%n", widths[widths.length - 1] / widths[0]);
 	}
 
 	/**

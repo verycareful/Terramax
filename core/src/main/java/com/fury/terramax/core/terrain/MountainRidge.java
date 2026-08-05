@@ -75,6 +75,11 @@ public final class MountainRidge {
 					? settings.continentalRiftDrop()
 					: settings.oceanicRidgeRise();
 			case TRANSFORM -> settings.transformRelief();
+
+			// A seam inside a plate. Falloff already returns zero at its infinite
+			// boundary distance, so this is belt and braces, but it keeps the switch
+			// exhaustive and states the intent rather than relying on a distance.
+			case NONE -> 0.0;
 		};
 	}
 

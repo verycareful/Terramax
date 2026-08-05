@@ -224,6 +224,7 @@ public final class MapRenderer {
 			case CONVERGENT -> CONVERGENT;
 			case DIVERGENT -> DIVERGENT;
 			case TRANSFORM -> TRANSFORM;
+			case NONE -> Color.BLACK;
 		};
 
 		double proximity = 1.0 - clamp01(sample.boundaryDistance() / interiorDistance);

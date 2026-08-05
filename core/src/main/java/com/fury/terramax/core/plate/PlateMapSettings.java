@@ -11,6 +11,8 @@ package com.fury.terramax.core.plate;
  * continent sizes stranded at their old values.
  *
  * @param crustSpacingBlocks        mean distance between crust cell centres
+ * @param nucleiSpacingBlocks       mean distance between plate nuclei
+ * @param nucleiMaxWeightFactor     largest nucleus reach bonus, in nuclei spacings
  * @param jitter                    crust cell offset as a fraction of spacing, in [0, 0.5]
  * @param continentalFraction       proportion of crust carrying continent, in [0, 1]
  * @param seaLevel                  world Y of sea level
@@ -23,6 +25,8 @@ package com.fury.terramax.core.plate;
  */
 public record PlateMapSettings(
 		double crustSpacingBlocks,
+		double nucleiSpacingBlocks,
+		double nucleiMaxWeightFactor,
 		double jitter,
 		double continentalFraction,
 		int seaLevel,
@@ -78,6 +82,11 @@ public record PlateMapSettings(
 		return crustSpacingBlocks * continentWavelengthFactor;
 	}
 
+	/** Largest reach bonus a nucleus may receive, in blocks. */
+	public double nucleiMaxWeightBlocks() {
+		return nucleiSpacingBlocks * nucleiMaxWeightFactor;
+	}
+
 	/**
 	 * Defaults for a two-lattice world with sea level at 0.
 	 *
@@ -95,10 +104,23 @@ public record PlateMapSettings(
 	 * has to grow accordingly. At 40.0 the land/ocean field correlates over roughly
 	 * 240,000 blocks, which is the continent-sized scale the old value gave when
 	 * spacing was 100,000.
+	 *
+	 * <p>{@code nucleiSpacingBlocks} 40,000 with {@code nucleiMaxWeightFactor} 1.5
+	 * targets plates 10,000 to 100,000 blocks wide. An unweighted diagram at this
+	 * spacing would give every plate about 40,000. A weight of up to 60,000 lets a
+	 * strong nucleus reach 100,000 while squeezing an unlucky neighbour down to
+	 * around 10,000, which is the order-of-magnitude spread Earth actually has and
+	 * that no unweighted Voronoi produces.
+	 *
+	 * <p>The weight factor is not free. {@code WeightedVoronoi} grows its search
+	 * radius to cover the weight range, so 1.5 means a 9x9 search instead of 5x5:
+	 * 81 sites per lookup rather than 25. Raising it further is quadratic.
 	 */
 	public static PlateMapSettings defaults() {
 		return new PlateMapSettings(
 				6_000.0,
+				40_000.0,
+				1.5,
 				0.35,
 				0.62,
 				0,
