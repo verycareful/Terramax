@@ -21,10 +21,10 @@ import com.fury.terramax.core.plate.PlateMapSettings;
 /**
  * Interactive window for tuning the plate system.
  *
- * <p>Exists because plate spacing is around 100,000 blocks. Editing a constant,
- * rebuilding and reading a PNG is a workable loop for checking correctness, but a
- * hopeless one for finding a value that looks right. Sliders make that a matter of
- * seconds.
+ * <p>Exists because the world's scale makes iterative tuning impractical. Editing
+ * a constant, rebuilding and reading a PNG is a workable loop for checking
+ * correctness, but a hopeless one for finding a value that looks right. Sliders
+ * make that a matter of seconds.
  *
  * <p>Drag to pan, scroll to zoom about the cursor. Every control rebuilds the
  * {@link PlateMap} and re-renders.
@@ -128,7 +128,7 @@ public final class TerrainViewer extends JFrame {
 					return String.format("k = %.2f", transformDominance);
 				}));
 
-		panel.add(slider("continent wavelength", PERCENT_SCALE, 16 * PERCENT_SCALE,
+		panel.add(slider("continent wavelength", PERCENT_SCALE, 80 * PERCENT_SCALE,
 				(int) Math.round(continentWavelengthFactor * PERCENT_SCALE),
 				value -> {
 					continentWavelengthFactor = value / (double) PERCENT_SCALE;

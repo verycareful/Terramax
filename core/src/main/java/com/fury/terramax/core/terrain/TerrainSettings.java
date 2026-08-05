@@ -54,9 +54,9 @@ public record TerrainSettings(
 	 * That is proportionate: the Himalayas are around 250km across against plates
 	 * some thousands of km wide.
 	 *
-	 * <p><b>Trenches are shallow, and not by choice.</b> With sea level at y=64 and
-	 * the dimension floor at y=-256 there are only 320 blocks of depth available,
-	 * against 1,728 blocks of sky. Earth is roughly symmetric: Everest at 8.8km
+	 * <p><b>Trenches are shallow, and not by choice.</b> With sea level at y=0 and
+	 * the dimension floor at y=-256 there are 256 blocks of depth available,
+	 * against 1,792 blocks of sky. Earth is roughly symmetric: Everest at 8.8km
 	 * against the Mariana Trench at -11km. An earthlike trench here would punch
 	 * through the bottom of the world. The oceanic base already sits as low as -160,
 	 * so -80 is close to all the room left. Deepening trenches means raising sea

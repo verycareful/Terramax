@@ -45,6 +45,6 @@ public record PlateSample(
 
 	/** True on the upper plate of a subduction zone, which gains an arc rather than a trench. */
 	public boolean isOverridingPlate() {
-		return crust.isContinental();
+		return isSubducting() && crust.isContinental();
 	}
 }
