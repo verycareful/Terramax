@@ -133,7 +133,12 @@ public final class MapRenderer {
 				elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB());
 	}
 
-	private static Color elevationColour(
+	/** Colour a region type is drawn in, for the legend to match the map. */
+	public static Color regionTypeColour(final RegionType type) {
+		return REGION_TYPE_COLOURS[type.ordinal()];
+	}
+
+	public static Color elevationColour(
 			final double height, final int minY, final int maxY, final int seaLevel) {
 		if (height <= seaLevel) {
 			double depth = clamp01((height - minY) / (double) (seaLevel - minY));
