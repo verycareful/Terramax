@@ -75,6 +75,10 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC);
 		writeTerrain("elevation-magma-continental", continental, world,
 				MapRenderer.TerrainLayer.ELEVATION_MAGMA);
+		writeTerrain("elevation-raw-continental", continental, world,
+				MapRenderer.TerrainLayer.ELEVATION_RAW);
+		writeTerrain("elevation-raw-local", local, world,
+				MapRenderer.TerrainLayer.ELEVATION_RAW);
 		writeTerrain("region-type-continental", continental, world,
 				MapRenderer.TerrainLayer.REGION_TYPE);
 		writeTerrain("region-type-local", local, world,

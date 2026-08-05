@@ -72,13 +72,13 @@ public record TerrainSettings(
 	 */
 	public static TerrainSettings defaults() {
 		return new TerrainSettings(
-				0.30,
-				0.10,
+				1.60,
+				0.53,
 				1400.0,
 				900.0,
 				420.0,
-				-80.0,
-				-180.0,
+				-45.0,
+				-110.0,
 				260.0,
 				60.0,
 				0.45,

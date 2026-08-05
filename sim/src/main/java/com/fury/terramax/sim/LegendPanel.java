@@ -73,6 +73,9 @@ public final class LegendPanel extends JPanel {
 			case ELEVATION_MAGMA -> drawRamp(g, x, y,
 					height -> MapRenderer.magmaColour(height, MapPanel.MIN_Y, MapPanel.MAX_Y));
 
+			case ELEVATION_RAW -> drawRamp(g, x, y,
+					height -> MapRenderer.rawColour(height, MapPanel.MIN_Y, MapPanel.MAX_Y));
+
 			case ELEVATION_HYPSOMETRIC -> drawRamp(g, x, y,
 					height -> MapRenderer.elevationColour(
 							height, MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));

@@ -120,6 +120,13 @@ public final class MapRenderer {
 		return rampColour(MAGMA_RAMP, (height - minY) / (double) (maxY - minY));
 	}
 
+	/** Grayscale for a height, linear across the dimension's full range. */
+	public static Color rawColour(final double height, final int minY, final int maxY) {
+		int level = clampByte(255.0 * (height - minY) / (double) (maxY - minY));
+
+		return new Color(level, level, level);
+	}
+
 	/**
 	 * Renders elevation with a hypsometric palette.
 	 *
@@ -192,6 +199,16 @@ public final class MapRenderer {
 		/** Magma spectrum over the dimension's full vertical range. */
 		ELEVATION_MAGMA,
 
+		/**
+		 * Plain grayscale, black at the world floor to white at the ceiling.
+		 *
+		 * <p>The standard heightmap form, and useful for a reason the colour ramps
+		 * are not: with no hue to distract, banding, terracing and seams show up
+		 * immediately. A discontinuity that reads as a slight shift of green in the
+		 * hypsometric palette is an obvious step in grayscale.
+		 */
+		ELEVATION_RAW,
+
 		/** Hypsometric palette with a crisp coastline at sea level. */
 		ELEVATION_HYPSOMETRIC,
 
@@ -249,6 +266,8 @@ public final class MapRenderer {
 		return TileRenderer.render(view, (worldX, worldZ) -> switch (layer) {
 			case ELEVATION_MAGMA ->
 					magmaColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
+			case ELEVATION_RAW ->
+					rawColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
 			case ELEVATION_HYPSOMETRIC ->
 					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
