@@ -13,6 +13,12 @@ package com.fury.terramax.core.region;
  * it into a tenth of the horizontal distance, and that one ratio is the entire
  * difference between the Cotswolds and the Dakota breaks.
  *
+ * <p><b>Heights are offsets above the crust platform, not absolute elevations.</b>
+ * The crust cell supplies a base, near 0 for continent and well below for ocean, and
+ * a region's band is measured from there. Reading these as absolute elevations and
+ * adding them to a base that already carried the land/ocean split drove the seafloor
+ * to y=-367, through the floor of the world.
+ *
  * <p><b>Only the types with no unbuilt dependencies are here.</b> Badlands need
  * lithology and rainfall, karst needs limestone, moraine and lake land need the
  * past-ice extent, and none of those systems exist yet. Adding them now would mean
@@ -38,8 +44,14 @@ public enum RegionType {
 	/** Flat tops at a common level, steep sides, flat floor between. Monument Valley. */
 	MESA(150, 500, 110, 1_100, 6),
 
-	/** Everything under the sea. A single type until oceans matter. */
-	OCEAN_FLOOR(-200, -60, 30, 4_000, 1);
+	/**
+	 * Everything under the sea. A single type until oceans matter.
+	 *
+	 * <p>A narrow band because the abyssal plain genuinely is flat, and because the
+	 * oceanic crust base already puts it deep. Giving the seabed the same spread as
+	 * land produces a lumpy floor that reads as noise rather than geology.
+	 */
+	OCEAN_FLOOR(-30, 30, 25, 4_000, 1);
 
 	private final int minHeight;
 	private final int maxHeight;

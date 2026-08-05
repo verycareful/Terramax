@@ -3,12 +3,20 @@ package com.fury.terramax.core.terrain;
 /**
  * Tuning for terrain relief.
  *
- * <p>Widths are fractions of plate spacing so the whole system rescales together
- * when plate size changes. Heights are absolute blocks, because the dimension's
- * vertical range does not scale with plate spacing.
+ * <p>Widths are fractions of crust spacing so the whole system rescales together
+ * when crust cell size changes. Heights are absolute blocks, because the
+ * dimension's vertical range does not scale with anything horizontal.
  *
- * @param blendWidthFraction       distance over which neighbouring plate bases blend, in plate spacings
- * @param rangeWidthFraction       half-width of a mountain range, in plate spacings
+ * <p><b>{@code blendWidthFraction} and {@code rangeWidthFraction} are knowingly
+ * stale.</b> They were tuned against 100,000-block plate spacing and are now
+ * multiplied by 6,000-block crust spacing, so ranges come out roughly sixteen times
+ * narrower than intended and mountains read as ridges rather than ranges. This is
+ * left rather than guessed at, because the right values depend on the seven range
+ * types and their zone sequences, which are a later slice. Expect the elevation
+ * statistics to show very little terrain above y=1000 until then.
+ *
+ * @param blendWidthFraction       distance over which neighbouring crust bases blend, in crust spacings
+ * @param rangeWidthFraction       half-width of a mountain range, in crust spacings
  * @param continentalCollisionRise peak rise where two continental plates collide, in blocks
  * @param subductionArcRise        peak rise on the overriding plate of a subduction zone
  * @param oceanicArcRise           peak rise where two oceanic plates converge
@@ -21,8 +29,9 @@ package com.fury.terramax.core.terrain;
  * @param detailWavelength         wavelength of that roughness, in blocks
  * @param valleyDepth              maximum depth of erosive valley carving, in blocks
  * @param valleyWavelength         spacing of valleys, in blocks
- * @param interiorReliefAmplitude  uplands and lowlands within a plate, in blocks
- * @param interiorReliefFraction   wavelength of that interior relief, in plate spacings
+ * @param regionReliefWavelengthFactor global multiplier on each region type's own
+ *                                     declared wavelength, for tuning without
+ *                                     editing the type table
  */
 public record TerrainSettings(
 		double blendWidthFraction,
@@ -39,8 +48,7 @@ public record TerrainSettings(
 		double detailWavelength,
 		double valleyDepth,
 		double valleyWavelength,
-		double interiorReliefAmplitude,
-		double interiorReliefFraction) {
+		double regionReliefWavelengthFactor) {
 
 	/**
 	 * Defaults sized for the y=-256 to 1792 dimension.
@@ -78,15 +86,14 @@ public record TerrainSettings(
 				900.0,
 				90.0,
 				7000.0,
-				260.0,
-				0.35);
+				1.0);
 	}
 
-	public double blendWidthBlocks(final double plateSpacing) {
-		return plateSpacing * blendWidthFraction;
+	public double blendWidthBlocks(final double crustSpacing) {
+		return crustSpacing * blendWidthFraction;
 	}
 
-	public double rangeWidthBlocks(final double plateSpacing) {
-		return plateSpacing * rangeWidthFraction;
+	public double rangeWidthBlocks(final double crustSpacing) {
+		return crustSpacing * rangeWidthFraction;
 	}
 }

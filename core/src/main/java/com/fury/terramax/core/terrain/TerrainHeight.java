@@ -2,6 +2,8 @@ package com.fury.terramax.core.terrain;
 
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
+import com.fury.terramax.core.region.RegionMap;
+import com.fury.terramax.core.region.RegionSample;
 import com.fury.terramax.core.util.FractalNoise2D;
 
 /**
@@ -25,11 +27,11 @@ import com.fury.terramax.core.util.FractalNoise2D;
 public final class TerrainHeight implements HeightField {
 	private static final long SALT_DETAIL = 0xD1B54A32D192ED03L;
 	private static final long SALT_VALLEY = 0xAEF17502108EF2D9L;
-	private static final long SALT_INTERIOR = 0x27D4EB2F165667C5L;
+	private static final long SALT_REGION = 0x27D4EB2F165667C5L;
 
 	private static final int DETAIL_OCTAVES = 4;
 	private static final int VALLEY_OCTAVES = 3;
-	private static final int INTERIOR_OCTAVES = 3;
+	private static final int REGION_OCTAVES = 3;
 
 	/**
 	 * How sharply valleys narrow. Higher concentrates carving into fewer, tighter
@@ -47,74 +49,93 @@ public final class TerrainHeight implements HeightField {
 	private static final double DETAIL_RAMP_BLOCKS = 120.0;
 
 	private final PlateMap plates;
+	private final RegionMap regions;
 	private final TerrainSettings settings;
 	private final MountainRidge ridge;
 	private final FractalNoise2D detail;
 	private final FractalNoise2D valleys;
-	private final FractalNoise2D interiorRelief;
+	private final FractalNoise2D regionRelief;
 	private final double blendWidthBlocks;
 	private final double seaLevel;
 
-	public TerrainHeight(final long seed, final PlateMap plates, final TerrainSettings settings) {
+	public TerrainHeight(
+			final long seed,
+			final PlateMap plates,
+			final RegionMap regions,
+			final TerrainSettings settings) {
 		this.plates = plates;
+		this.regions = regions;
 		this.settings = settings;
 		this.ridge = new MountainRidge(seed, settings, plates.settings().crustSpacingBlocks());
 		this.detail = FractalNoise2D.standard(seed ^ SALT_DETAIL, DETAIL_OCTAVES, settings.detailWavelength());
 		this.valleys = FractalNoise2D.standard(seed ^ SALT_VALLEY, VALLEY_OCTAVES, settings.valleyWavelength());
-		this.interiorRelief = FractalNoise2D.standard(
-				seed ^ SALT_INTERIOR,
-				INTERIOR_OCTAVES,
-				plates.settings().crustSpacingBlocks() * settings.interiorReliefFraction());
+
+		// Unit wavelength, deliberately. Each region type declares its own, so this
+		// field is sampled at coordinates already divided by that wavelength rather
+		// than being built for any one of them.
+		this.regionRelief = FractalNoise2D.standard(seed ^ SALT_REGION, REGION_OCTAVES, 1.0);
+
 		this.blendWidthBlocks = settings.blendWidthBlocks(plates.settings().crustSpacingBlocks());
 		this.seaLevel = plates.settings().seaLevel();
 	}
 
 	@Override
 	public double heightAt(final double worldX, final double worldZ) {
-		PlateSample sample = plates.sample(worldX, worldZ);
+		PlateSample plate = plates.sample(worldX, worldZ);
+		RegionSample region = regions.sample(worldX, worldZ, plate.crust().crustType());
 
 		// How far into the plate's interior this position is: 0 at a boundary,
-		// 1 once past the blend width. Both the base blend and interior relief use
-		// it, so they stay consistent with each other.
-		double interiority = smoothstep(sample.boundaryDistance() / blendWidthBlocks);
+		// 1 once past the blend width. Both the base blend and region relief use it,
+		// so they stay consistent with each other.
+		double interiority = smoothstep(plate.boundaryDistance() / blendWidthBlocks);
 
-		double height = blendedBase(sample, interiority);
-		height += interiorRelief(sample, interiority, worldX, worldZ);
-		height += ridge.offsetAt(sample, worldX, worldZ);
+		double height = blendedBase(plate, interiority);
+		height += regionRelief(region, interiority, worldX, worldZ);
+		height += ridge.offsetAt(plate, worldX, worldZ);
 		height += landDetail(height, worldX, worldZ);
 
 		return height;
 	}
 
 	/**
-	 * Uplands and lowlands within a single plate.
+	 * The region's contribution: its target height above the crust base, plus relief
+	 * within it.
 	 *
-	 * <p>Without this a plate is one flat plain from edge to edge, since its base is
-	 * a single value and small-scale detail is invisible across tens of thousands of
-	 * blocks. Real continental interiors are not flat: they carry plateaus, basins
-	 * and worn-down ranges inherited from tectonics long finished. This stands in for
-	 * that history rather than simulating it.
+	 * <p>This replaces the diffuse {@code interiorRelief} noise that used to sit
+	 * here. Without something in this position a plate is one flat plain from edge to
+	 * edge, since a crust cell's base is a single value and small-scale detail is
+	 * invisible across tens of thousands of blocks. Noise filled the gap but could
+	 * only make lumps; a region is a coherent area with a type and an identity, which
+	 * is what a biome can be placed on.
 	 *
-	 * <p>Applied to continental plates only. Abyssal plains genuinely are flat, and
-	 * giving ocean floor the same treatment produces a lumpy seabed that reads as
-	 * noise rather than geology.
+	 * <p>Blended toward the neighbouring region by boundary distance, so region edges
+	 * are grades rather than cliffs. That blend is a <b>placeholder</b> for
+	 * {@code RIM}, which will handle edges properly and can produce a genuine cliff
+	 * where one is wanted.
 	 *
-	 * <p>Faded out toward boundaries by {@code interiority}. Two reasons. Physically,
-	 * boundary processes dominate near a margin and inherited interior structure does
-	 * not. Practically, stacking full-amplitude relief on top of a base already
-	 * blended toward an ocean neighbour drove terrain through the floor of the world,
-	 * and stacking it under a 1,400-block range drove it through the ceiling.
+	 * <p>Faded by {@code interiority} for the same two reasons the old noise was.
+	 * Physically, boundary processes dominate near a margin and inherited interior
+	 * structure does not. Practically, stacking full-amplitude relief on a base
+	 * already blended toward an ocean neighbour drove terrain through the floor of
+	 * the world, and stacking it under a 1,400-block range drove it through the
+	 * ceiling.
 	 */
-	private double interiorRelief(
-			final PlateSample sample, final double interiority,
+	private double regionRelief(
+			final RegionSample sample, final double interiority,
 			final double worldX, final double worldZ) {
-		if (!sample.crust().isContinental()) {
-			return 0.0;
-		}
+		double blend = smoothstep(sample.boundaryDistance() / regions.settings().blendWidthBlocks());
 
-		return interiorRelief.sample(worldX, worldZ)
-				* settings.interiorReliefAmplitude()
-				* interiority;
+		double own = sample.region().targetHeight();
+		double neighbour = sample.neighbour().targetHeight();
+		double midpoint = (own + neighbour) * 0.5;
+		double target = midpoint + (own - midpoint) * blend;
+
+		double wavelength = sample.region().type().wavelength()
+				* settings.regionReliefWavelengthFactor();
+		double relief = regionRelief.sample(worldX / wavelength, worldZ / wavelength)
+				* sample.region().reliefAmplitude();
+
+		return (target + relief) * interiority;
 	}
 
 	/**

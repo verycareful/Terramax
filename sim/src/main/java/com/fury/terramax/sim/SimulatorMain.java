@@ -13,6 +13,8 @@ import com.fury.terramax.core.plate.CrustType;
 import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
+import com.fury.terramax.core.region.RegionMap;
+import com.fury.terramax.core.region.RegionSettings;
 import com.fury.terramax.core.terrain.HeightField;
 import com.fury.terramax.core.terrain.TerrainHeight;
 import com.fury.terramax.core.terrain.TerrainSettings;
@@ -87,7 +89,8 @@ public final class SimulatorMain {
 		write("boundaries-continental", continental, plates, MapRenderer.Layer.BOUNDARY_DISTANCE);
 		write("plates-local", local, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
 
-		TerrainHeight terrain = new TerrainHeight(SEED, plates, TerrainSettings.defaults());
+		RegionMap regions = new RegionMap(SEED, RegionSettings.defaults());
+		TerrainHeight terrain = new TerrainHeight(SEED, plates, regions, TerrainSettings.defaults());
 
 		writeElevation("elevation-continental", continental, terrain, settings);
 		writeElevation("elevation-local", local, terrain, settings);

@@ -115,6 +115,20 @@ public record PlateMapSettings(
 	 * <p>The weight factor is not free. {@code WeightedVoronoi} grows its search
 	 * radius to cover the weight range, so 1.5 means a 9x9 search instead of 5x5:
 	 * 81 sites per lookup rather than 25. Raising it further is quadratic.
+	 *
+	 * <p><b>The crust bases are a platform, not the finished elevation.</b>
+	 * {@code continentalBase} is 0 and {@code oceanicBase} is -115, with regions
+	 * supplying the height on top. They were 112 and -96 when nothing else set
+	 * interior elevation; leaving them there while regions also contributed put the
+	 * seafloor at y=-367, through the floor of the world. The base now does two jobs
+	 * only: it separates land from ocean, and it is what neighbouring crust blends
+	 * toward at a plate boundary.
+	 *
+	 * <p>{@code oceanicBase} carries deliberate headroom. At -130 the deepest sample
+	 * measured y=-252 against a floor of y=-256, because a trench stacks on top of
+	 * the low end of the base variation. Four blocks of margin over 160,000 samples
+	 * is not margin, and a different seed would punch through the bottom of the
+	 * world.
 	 */
 	public static PlateMapSettings defaults() {
 		return new PlateMapSettings(
@@ -124,9 +138,9 @@ public record PlateMapSettings(
 				0.35,
 				0.62,
 				0,
-				112,
-				-96,
-				64,
+				0,
+				-115,
+				25,
 				3.0,
 				new Warp(2.5, 1.6, 3),
 				40.0);
