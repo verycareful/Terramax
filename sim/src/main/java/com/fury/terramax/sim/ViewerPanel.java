@@ -16,6 +16,8 @@ import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
 import com.fury.terramax.core.plate.PlateMap;
+import com.fury.terramax.core.region.RegionMap;
+import com.fury.terramax.core.terrain.HeightField;
 
 /**
  * Pannable, zoomable view of the plate system.
@@ -35,16 +37,43 @@ public final class ViewerPanel extends JPanel {
 	private static final int DRAFT_PIXELS = 220;
 
 	private static final double ZOOM_STEP = 1.25;
-	private static final double MIN_SPAN_BLOCKS = 512.0;
+
+	/**
+	 * Tightest zoom, in blocks across the window.
+	 *
+	 * <p>256 blocks in a 1,000-pixel window is about four pixels per block, which is
+	 * past the point of usefulness: terrain has no detail below one block, so
+	 * zooming further only shows larger squares of the same information.
+	 */
+	private static final double MIN_SPAN_BLOCKS = 256.0;
+
 	private static final double MAX_SPAN_BLOCKS = 1.0e8;
+
+	/** The dimension's vertical range, and sea level, matching {@link SimulatorMain}. */
+	private static final int MIN_Y = -256;
+	private static final int MAX_Y = 1792;
+	private static final int SEA_LEVEL = 0;
 
 	private static final Color BACKGROUND = new Color(18, 20, 24);
 	private static final Color HUD_TEXT = new Color(226, 230, 238);
 	private static final Color HUD_SHADOW = new Color(0, 0, 0, 190);
 
 	private final transient Supplier<PlateMap> plateSource;
+	private final transient Supplier<RegionMap> regionSource;
+	private final transient Supplier<HeightField> terrainSource;
 
-	private transient MapRenderer.Layer layer = MapRenderer.Layer.PLATE_TYPE;
+	/**
+	 * Exactly one of these is active. A terrain layer, when set, takes precedence.
+	 *
+	 * <p>Two independent selections would let the window show neither of the two
+	 * things the user picked.
+	 */
+	private transient MapRenderer.Layer plateLayer = MapRenderer.Layer.CRUST_TYPE;
+	private transient MapRenderer.TerrainLayer terrainLayer = MapRenderer.TerrainLayer.ELEVATION_MAGMA;
+
+	/** First endpoint of a pending cross section, or null when none is armed. */
+	private transient double[] sectionStart;
+
 	private double centreX;
 	private double centreZ;
 	private double spanBlocks;
@@ -59,21 +88,31 @@ public final class ViewerPanel extends JPanel {
 	private int dragOriginX;
 	private int dragOriginY;
 
-	public ViewerPanel(final Supplier<PlateMap> plateSource, final double initialSpanBlocks) {
+	public ViewerPanel(
+			final Supplier<PlateMap> plateSource,
+			final Supplier<RegionMap> regionSource,
+			final Supplier<HeightField> terrainSource,
+			final double initialSpanBlocks) {
 		this.plateSource = plateSource;
+		this.regionSource = regionSource;
+		this.terrainSource = terrainSource;
 		this.spanBlocks = initialSpanBlocks;
 
 		setBackground(BACKGROUND);
 		installMouseHandlers();
 	}
 
+	/** Selects a plate layer, clearing any terrain layer. */
 	public void setLayer(final MapRenderer.Layer newLayer) {
-		this.layer = newLayer;
+		this.plateLayer = newLayer;
+		this.terrainLayer = null;
 		requestRender(false);
 	}
 
-	public MapRenderer.Layer layer() {
-		return layer;
+	/** Selects a terrain layer, which takes precedence over the plate layer. */
+	public void setTerrainLayer(final MapRenderer.TerrainLayer newLayer) {
+		this.terrainLayer = newLayer;
+		requestRender(false);
 	}
 
 	/** Call after any settings change, so the view picks up the new plate map. */
@@ -105,6 +144,33 @@ public final class ViewerPanel extends JPanel {
 			@Override
 			public void mouseReleased(final MouseEvent e) {
 				requestRender(false);
+			}
+
+			@Override
+			public void mouseClicked(final MouseEvent e) {
+				// Right-click, because left is already panning and a click that also
+				// starts a drag would arm sections by accident on every pan.
+				if (!SwingUtilities.isRightMouseButton(e)) {
+					return;
+				}
+
+				double blocksPerPixel = spanBlocks / Math.max(1, getWidth());
+				double worldX = centreX + (e.getX() - getWidth() / 2.0) * blocksPerPixel;
+				double worldZ = centreZ + (e.getY() - getHeight() / 2.0) * blocksPerPixel;
+
+				if (sectionStart == null) {
+					sectionStart = new double[] {worldX, worldZ};
+					repaint();
+					return;
+				}
+
+				CrossSectionWindow.show(
+						terrainSource.get(),
+						sectionStart[0], sectionStart[1], worldX, worldZ,
+						MIN_Y, MAX_Y, SEA_LEVEL);
+
+				sectionStart = null;
+				repaint();
 			}
 
 			@Override
@@ -151,11 +217,21 @@ public final class ViewerPanel extends JPanel {
 		int pixels = draftQuality ? DRAFT_PIXELS : Math.max(1, Math.min(getWidth(), getHeight()));
 		MapView view = new MapView(centreX, centreZ, spanBlocks, pixels);
 		PlateMap plates = plateSource.get();
-		MapRenderer.Layer requestedLayer = layer;
+		RegionMap regions = regionSource.get();
+		HeightField terrain = terrainSource.get();
+		MapRenderer.Layer requestedPlate = plateLayer;
+		MapRenderer.TerrainLayer requestedTerrain = terrainLayer;
 
 		Thread worker = new Thread(() -> {
 			long start = System.nanoTime();
-			BufferedImage image = MapRenderer.render(plates, view, requestedLayer);
+
+			BufferedImage image = requestedTerrain != null
+					? MapRenderer.renderTerrainProgressive(
+							terrain, plates, regions, view, requestedTerrain,
+							MIN_Y, MAX_Y, SEA_LEVEL, partial -> showPartial(partial, view))
+					: MapRenderer.renderProgressive(
+							plates, view, requestedPlate, partial -> showPartial(partial, view));
+
 			long elapsed = (System.nanoTime() - start) / 1_000_000L;
 
 			SwingUtilities.invokeLater(() -> {
@@ -174,6 +250,25 @@ public final class ViewerPanel extends JPanel {
 
 		worker.setDaemon(true);
 		worker.start();
+	}
+
+	/**
+	 * Shows a partially rendered image without waiting for the rest.
+	 *
+	 * <p>Tiles still in flight appear as black squares that fill in, which is exactly
+	 * the feedback wanted: at one block per pixel a full render takes seconds even
+	 * across a dozen cores, and a blank window for that long is indistinguishable
+	 * from a hang.
+	 *
+	 * <p>The image is the renderer's shared raster rather than a copy. Swing only
+	 * reads it during paint, so a half-written tile shows as a half-drawn tile.
+	 */
+	private void showPartial(final BufferedImage partial, final MapView view) {
+		SwingUtilities.invokeLater(() -> {
+			current = partial;
+			currentSpan = view.spanBlocks();
+			repaint();
+		});
 	}
 
 	@Override
@@ -200,11 +295,14 @@ public final class ViewerPanel extends JPanel {
 
 	private void drawHud(final Graphics2D g) {
 		String[] lines = {
-			layer.name(),
+			terrainLayer != null ? terrainLayer.name() : plateLayer.name(),
 			String.format("centre  %,.0f, %,.0f", centreX, centreZ),
 			String.format("span    %,.0f blocks", currentSpan),
-			String.format("scale   %,.0f blocks/pixel", currentSpan / Math.max(1, getWidth())),
-			String.format("render  %d ms%s", lastRenderMs, current.getWidth() <= DRAFT_PIXELS ? " (draft)" : "")
+			String.format("scale   %,.2f blocks/pixel", currentSpan / Math.max(1, getWidth())),
+			String.format("render  %d ms%s", lastRenderMs, current.getWidth() <= DRAFT_PIXELS ? " (draft)" : ""),
+			sectionStart == null
+					? "right-click twice for a section"
+					: String.format("section from %,.0f, %,.0f", sectionStart[0], sectionStart[1])
 		};
 
 		g.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
@@ -213,7 +311,7 @@ public final class ViewerPanel extends JPanel {
 		int boxHeight = lines.length * lineHeight + 12;
 
 		g.setColor(HUD_SHADOW);
-		g.fillRect(8, 8, 260, boxHeight);
+		g.fillRect(8, 8, 300, boxHeight);
 
 		g.setColor(HUD_TEXT);
 

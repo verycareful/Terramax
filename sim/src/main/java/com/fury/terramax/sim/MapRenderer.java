@@ -5,6 +5,8 @@ import java.awt.image.BufferedImage;
 
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
+import com.fury.terramax.core.region.RegionMap;
+import com.fury.terramax.core.region.RegionType;
 import com.fury.terramax.core.terrain.HeightField;
 import com.fury.terramax.core.util.Hashing;
 
@@ -19,13 +21,18 @@ public final class MapRenderer {
 	private static final float PLATE_SATURATION = 0.45f;
 	private static final float PLATE_BRIGHTNESS = 0.80f;
 
-	/** Boundary distances beyond this fraction of plate spacing all read as "interior". */
-	private static final double INTERIOR_FRACTION = 0.25;
+	/**
+	 * Boundary distances beyond this multiple of crust spacing all read as
+	 * "interior".
+	 *
+	 * <p>Four crust spacings, so 24,000 blocks at the default. It was 0.25 when this
+	 * multiplied 100,000-block plate spacing; against 6,000-block crust cells that
+	 * would be 1,500 blocks and every distance layer would be almost entirely dark.
+	 */
+	private static final double INTERIOR_FRACTION = 4.0;
 
 	/** Boundaries within this many blocks are drawn as a hard line. */
 	private static final double EDGE_LINE_BLOCKS = 1.5;
-
-	private static final int SITE_MARKER_RADIUS_PIXELS = 3;
 
 	private static final Color CONVERGENT = new Color(200, 60, 40);
 	private static final Color DIVERGENT = new Color(60, 110, 210);
@@ -59,7 +66,58 @@ public final class MapRenderer {
 		new Color(248, 248, 250)
 	};
 
+	/**
+	 * Perceptual spectrum from world floor to ceiling: black through deep blue and
+	 * purple into red and orange, ending white.
+	 *
+	 * <p>Linear over the full range with nothing overlaid, and deliberately no sea
+	 * level marker. This is a data view rather than a geographic one. The hypsometric
+	 * palette above shows where the coast is; this shows the small height differences
+	 * the hypsometric flattens into a single green.
+	 */
+	private static final Color[] MAGMA_RAMP = {
+		new Color(0, 0, 4),
+		new Color(40, 11, 84),
+		new Color(101, 21, 110),
+		new Color(159, 42, 99),
+		new Color(212, 72, 66),
+		new Color(245, 125, 21),
+		new Color(250, 193, 39),
+		new Color(252, 253, 191)
+	};
+
+	/**
+	 * Colours for {@link TerrainLayer#REGION_TYPE}, indexed by {@code ordinal()}.
+	 *
+	 * <p>Kept in the same order as {@code RegionType.values()}, and the static block
+	 * below fails loudly if that stops being true. Without it, adding a region type
+	 * would throw an array index exception from inside a render thread, which
+	 * surfaces as a blank tile rather than as the mistake it is.
+	 */
+	private static final Color[] REGION_TYPE_COLOURS = {
+		new Color(154, 190, 116),
+		new Color(122, 158, 92),
+		new Color(196, 174, 122),
+		new Color(150, 128, 96),
+		new Color(206, 196, 148),
+		new Color(184, 124, 88),
+		new Color(38, 70, 120)
+	};
+
+	static {
+		if (REGION_TYPE_COLOURS.length != RegionType.values().length) {
+			throw new IllegalStateException(
+					"REGION_TYPE_COLOURS has " + REGION_TYPE_COLOURS.length
+							+ " entries but RegionType has " + RegionType.values().length);
+		}
+	}
+
 	private MapRenderer() {
+	}
+
+	/** Magma spectrum colour for a height, linear across the dimension's full range. */
+	public static Color magmaColour(final double height, final int minY, final int maxY) {
+		return rampColour(MAGMA_RAMP, (height - minY) / (double) (maxY - minY));
 	}
 
 	/**
@@ -71,19 +129,8 @@ public final class MapRenderer {
 	public static BufferedImage renderElevation(
 			final HeightField field, final MapView view,
 			final int minY, final int maxY, final int seaLevel) {
-		BufferedImage image = new BufferedImage(view.pixels(), view.pixels(), BufferedImage.TYPE_INT_RGB);
-
-		for (int py = 0; py < view.pixels(); py++) {
-			double worldZ = view.worldZ(py);
-
-			for (int px = 0; px < view.pixels(); px++) {
-				double height = field.heightAt(view.worldX(px), worldZ);
-
-				image.setRGB(px, py, elevationColour(height, minY, maxY, seaLevel).getRGB());
-			}
-		}
-
-		return image;
+		return TileRenderer.renderAll(view, (worldX, worldZ) ->
+				elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB());
 	}
 
 	private static Color elevationColour(
@@ -128,39 +175,101 @@ public final class MapRenderer {
 		/** Bright at boundaries, dark in interiors. This is where mountains will go. */
 		BOUNDARY_DISTANCE,
 
-		/** Land against ocean, shaded by each plate's base elevation. */
-		PLATE_TYPE,
+		/** Land against ocean, shaded by each crust cell's base elevation. */
+		CRUST_TYPE,
 
 		/** Boundaries coloured by what the two plates are doing to each other. */
 		BOUNDARY_TYPE
 	}
 
-	public static BufferedImage render(final PlateMap plates, final MapView view, final Layer layer) {
-		BufferedImage image = new BufferedImage(view.pixels(), view.pixels(), BufferedImage.TYPE_INT_RGB);
+	/** Layers needing the height field and the region lattice, not just plates. */
+	public enum TerrainLayer {
+		/** Magma spectrum over the dimension's full vertical range. */
+		ELEVATION_MAGMA,
 
+		/** Hypsometric palette with a crisp coastline at sea level. */
+		ELEVATION_HYPSOMETRIC,
+
+		/** One colour per terrain type, so the region map is directly readable. */
+		REGION_TYPE,
+
+		/** A stable colour per region, to check region size and shape. */
+		REGION_ID
+	}
+
+	public static BufferedImage render(final PlateMap plates, final MapView view, final Layer layer) {
+		return renderProgressive(plates, view, layer, image -> {
+		});
+	}
+
+	/**
+	 * Renders a plate layer, notifying as each tile completes.
+	 *
+	 * <p>No plate-centre markers: sites live in warped space, so drawing them at
+	 * unwarped screen positions would place them outside their own plates.
+	 */
+	public static BufferedImage renderProgressive(
+			final PlateMap plates, final MapView view, final Layer layer,
+			final TileRenderer.TileListener listener) {
 		double spacing = plates.settings().crustSpacingBlocks();
 		double interiorDistance = spacing * INTERIOR_FRACTION;
 		double edgeLineBlocks = Math.max(EDGE_LINE_BLOCKS, view.blocksPerPixel());
 
-		for (int py = 0; py < view.pixels(); py++) {
-			double worldZ = view.worldZ(py);
+		return TileRenderer.render(view, (worldX, worldZ) -> {
+			PlateSample sample = plates.sample(worldX, worldZ);
 
-			for (int px = 0; px < view.pixels(); px++) {
-				double worldX = view.worldX(px);
-				PlateSample sample = plates.sample(worldX, worldZ);
+			return switch (layer) {
+				case PLATES_WITH_EDGES -> platesWithEdges(sample, interiorDistance, edgeLineBlocks);
+				case BOUNDARY_DISTANCE -> boundaryShade(sample, interiorDistance);
+				case CRUST_TYPE -> crustTypeColour(sample, plates, edgeLineBlocks);
+				case BOUNDARY_TYPE -> boundaryTypeColour(sample, interiorDistance);
+			};
+		}, listener);
+	}
 
-				image.setRGB(px, py, switch (layer) {
-					case PLATES_WITH_EDGES -> platesWithEdges(sample, interiorDistance, edgeLineBlocks);
-					case BOUNDARY_DISTANCE -> boundaryShade(sample, interiorDistance);
-					case PLATE_TYPE -> plateTypeColour(sample, plates, edgeLineBlocks);
-					case BOUNDARY_TYPE -> boundaryTypeColour(sample, interiorDistance);
+	public static BufferedImage renderTerrain(
+			final HeightField field, final PlateMap plates, final RegionMap regions,
+			final MapView view, final TerrainLayer layer,
+			final int minY, final int maxY, final int seaLevel) {
+		return renderTerrainProgressive(
+				field, plates, regions, view, layer, minY, maxY, seaLevel, image -> {
 				});
-			}
-		}
+	}
 
-		// No plate-centre markers. Sites live in warped space, so drawing them at
-		// unwarped screen positions would place them outside their own plates.
-		return image;
+	public static BufferedImage renderTerrainProgressive(
+			final HeightField field, final PlateMap plates, final RegionMap regions,
+			final MapView view, final TerrainLayer layer,
+			final int minY, final int maxY, final int seaLevel,
+			final TileRenderer.TileListener listener) {
+		return TileRenderer.render(view, (worldX, worldZ) -> switch (layer) {
+			case ELEVATION_MAGMA ->
+					magmaColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
+			case ELEVATION_HYPSOMETRIC ->
+					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
+			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
+			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
+		}, listener);
+	}
+
+	private static int regionTypeColour(
+			final PlateMap plates, final RegionMap regions,
+			final double worldX, final double worldZ) {
+		var crust = plates.sample(worldX, worldZ).crust().crustType();
+		var region = regions.sample(worldX, worldZ, crust).region();
+
+		return REGION_TYPE_COLOURS[region.type().ordinal()].getRGB();
+	}
+
+	private static int regionIdColour(
+			final PlateMap plates, final RegionMap regions,
+			final double worldX, final double worldZ) {
+		var crust = plates.sample(worldX, worldZ).crust().crustType();
+		var region = regions.sample(worldX, worldZ, crust).region();
+
+		long id = Hashing.hash(0L, region.cellX(), region.cellZ());
+		float hue = ((id >>> 40) & 0xFFFF) / (float) 0x10000;
+
+		return Color.getHSBColor(hue, PLATE_SATURATION, PLATE_BRIGHTNESS).getRGB();
 	}
 
 	/** A stable colour per plate, derived from its cell identity. */
@@ -192,10 +301,15 @@ public final class MapRenderer {
 	}
 
 	/**
-	 * Land against ocean, each plate shaded by its own base elevation so the spread
-	 * within a type is visible rather than flattened.
+	 * Land against ocean, each crust cell shaded by its own base elevation so the
+	 * spread within a type is visible rather than flattened.
+	 *
+	 * <p>Crust type is a property of the cell, not the plate, so coastlines here are
+	 * independent of the boundary lines. Land crossing a boundary, and boundaries
+	 * running through open ocean, are the expected result and the whole point of the
+	 * change.
 	 */
-	private static int plateTypeColour(
+	private static int crustTypeColour(
 			final PlateSample sample, final PlateMap plates, final double edgeLineBlocks) {
 		if (sample.boundaryDistance() <= edgeLineBlocks) {
 			return Color.BLACK.getRGB();
@@ -230,46 +344,6 @@ public final class MapRenderer {
 		double proximity = 1.0 - clamp01(sample.boundaryDistance() / interiorDistance);
 
 		return scale(base, proximity).getRGB();
-	}
-
-	/** Marks plate centres, so jitter and spacing are directly checkable. */
-	private static void drawSiteMarkers(
-			final BufferedImage image, final PlateMap plates, final MapView view) {
-		double half = view.spanBlocks() * 0.5;
-		var sites = plates.voronoi().sites();
-
-		long minCellX = sites.cellX(view.centreX() - half) - 1;
-		long maxCellX = sites.cellX(view.centreX() + half) + 1;
-		long minCellZ = sites.cellZ(view.centreZ() - half) - 1;
-		long maxCellZ = sites.cellZ(view.centreZ() + half) + 1;
-
-		for (long cellZ = minCellZ; cellZ <= maxCellZ; cellZ++) {
-			for (long cellX = minCellX; cellX <= maxCellX; cellX++) {
-				int px = (int) Math.round(
-						(sites.pointX(cellX, cellZ) - (view.centreX() - half)) / view.blocksPerPixel());
-				int py = (int) Math.round(
-						(sites.pointZ(cellX, cellZ) - (view.centreZ() - half)) / view.blocksPerPixel());
-
-				fillMarker(image, px, py);
-			}
-		}
-	}
-
-	private static void fillMarker(final BufferedImage image, final int centreX, final int centreY) {
-		for (int dy = -SITE_MARKER_RADIUS_PIXELS; dy <= SITE_MARKER_RADIUS_PIXELS; dy++) {
-			for (int dx = -SITE_MARKER_RADIUS_PIXELS; dx <= SITE_MARKER_RADIUS_PIXELS; dx++) {
-				if (dx * dx + dy * dy > SITE_MARKER_RADIUS_PIXELS * SITE_MARKER_RADIUS_PIXELS) {
-					continue;
-				}
-
-				int x = centreX + dx;
-				int y = centreY + dy;
-
-				if (x >= 0 && y >= 0 && x < image.getWidth() && y < image.getHeight()) {
-					image.setRGB(x, y, Color.WHITE.getRGB());
-				}
-			}
-		}
 	}
 
 	private static Color scale(final Color base, final double factor) {

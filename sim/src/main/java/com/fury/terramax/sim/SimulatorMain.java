@@ -84,7 +84,7 @@ public final class SimulatorMain {
 		MapView local = new MapView(0, 0, spacing * LOCAL_SPAN_CELLS, IMAGE_PIXELS);
 
 		write("plates-continental", continental, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
-		write("plate-type-continental", continental, plates, MapRenderer.Layer.PLATE_TYPE);
+		write("crust-type-continental", continental, plates, MapRenderer.Layer.CRUST_TYPE);
 		write("boundary-type-continental", continental, plates, MapRenderer.Layer.BOUNDARY_TYPE);
 		write("boundaries-continental", continental, plates, MapRenderer.Layer.BOUNDARY_DISTANCE);
 		write("plates-local", local, plates, MapRenderer.Layer.PLATES_WITH_EDGES);
@@ -92,8 +92,16 @@ public final class SimulatorMain {
 		RegionMap regions = new RegionMap(SEED, RegionSettings.defaults());
 		TerrainHeight terrain = new TerrainHeight(SEED, plates, regions, TerrainSettings.defaults());
 
-		writeElevation("elevation-continental", continental, terrain, settings);
-		writeElevation("elevation-local", local, terrain, settings);
+		writeTerrain("elevation-continental", continental, terrain, plates, regions,
+				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC, settings);
+		writeTerrain("elevation-local", local, terrain, plates, regions,
+				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC, settings);
+		writeTerrain("elevation-magma-continental", continental, terrain, plates, regions,
+				MapRenderer.TerrainLayer.ELEVATION_MAGMA, settings);
+		writeTerrain("region-type-continental", continental, terrain, plates, regions,
+				MapRenderer.TerrainLayer.REGION_TYPE, settings);
+		writeTerrain("region-id-local", local, terrain, plates, regions,
+				MapRenderer.TerrainLayer.REGION_ID, settings);
 		writeCrossSection(terrain, settings);
 
 		printStatistics(plates, continental);
@@ -247,13 +255,17 @@ public final class SimulatorMain {
 				"cross-section", reach * 2.0 * Math.hypot(1.0, 0.4), MIN_Y, MAX_Y, elapsedMs);
 	}
 
-	private static void writeElevation(
+	private static void writeTerrain(
 			final String name,
 			final MapView view,
 			final HeightField terrain,
+			final PlateMap plates,
+			final RegionMap regions,
+			final MapRenderer.TerrainLayer layer,
 			final PlateMapSettings settings) throws IOException {
 		long start = System.nanoTime();
-		var image = MapRenderer.renderElevation(terrain, view, MIN_Y, MAX_Y, settings.seaLevel());
+		var image = MapRenderer.renderTerrain(
+				terrain, plates, regions, view, layer, MIN_Y, MAX_Y, settings.seaLevel());
 		long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
 		ImageIO.write(image, "PNG", OUTPUT_DIR.resolve(name + ".png").toFile());

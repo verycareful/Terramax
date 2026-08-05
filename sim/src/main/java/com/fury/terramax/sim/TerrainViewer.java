@@ -6,6 +6,7 @@ import java.awt.GridLayout;
 
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -17,6 +18,11 @@ import javax.swing.SwingUtilities;
 
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
+import com.fury.terramax.core.region.RegionMap;
+import com.fury.terramax.core.region.RegionSettings;
+import com.fury.terramax.core.terrain.HeightField;
+import com.fury.terramax.core.terrain.TerrainHeight;
+import com.fury.terramax.core.terrain.TerrainSettings;
 
 /**
  * Interactive window for tuning the plate system.
@@ -60,7 +66,9 @@ public final class TerrainViewer extends JFrame {
 		this.transformDominance = initial.transformDominance();
 		this.continentWavelengthFactor = initial.continentWavelengthFactor();
 
-		this.viewer = new ViewerPanel(this::buildPlateMap, crustSpacingBlocks * 140.0);
+		this.viewer = new ViewerPanel(
+				this::buildPlateMap, this::buildRegionMap, this::buildTerrain,
+				crustSpacingBlocks * 140.0);
 
 		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 		setLayout(new BorderLayout());
@@ -95,6 +103,21 @@ public final class TerrainViewer extends JFrame {
 				continentWavelengthFactor);
 
 		return new PlateMap(seed, settings);
+	}
+
+	private RegionMap buildRegionMap() {
+		return new RegionMap(seed, RegionSettings.defaults());
+	}
+
+	/**
+	 * Rebuilt per render rather than cached, for the same reason the plate map is.
+	 *
+	 * <p>{@link TerrainHeight} holds a {@link PlateMap}, which calibrates its land
+	 * threshold at construction. Caching the terrain would leave that calibration
+	 * stale after any settings change, silently.
+	 */
+	private HeightField buildTerrain() {
+		return new TerrainHeight(seed, buildPlateMap(), buildRegionMap(), TerrainSettings.defaults());
 	}
 
 	private JPanel buildControls() {
@@ -161,10 +184,35 @@ public final class TerrainViewer extends JFrame {
 		return panel;
 	}
 
+	/**
+	 * One selector over both layer families.
+	 *
+	 * <p>Two separate combo boxes would let the user pick a plate layer and a terrain
+	 * layer at once, and then show neither of the two they chose.
+	 */
 	private JPanel layerSelector() {
-		JComboBox<MapRenderer.Layer> box = new JComboBox<>(MapRenderer.Layer.values());
-		box.setSelectedItem(viewer.layer());
-		box.addActionListener(e -> viewer.setLayer((MapRenderer.Layer) box.getSelectedItem()));
+		DefaultComboBoxModel<Object> model = new DefaultComboBoxModel<>();
+
+		for (MapRenderer.TerrainLayer layer : MapRenderer.TerrainLayer.values()) {
+			model.addElement(layer);
+		}
+
+		for (MapRenderer.Layer layer : MapRenderer.Layer.values()) {
+			model.addElement(layer);
+		}
+
+		JComboBox<Object> box = new JComboBox<>(model);
+		box.setSelectedItem(MapRenderer.TerrainLayer.ELEVATION_MAGMA);
+
+		box.addActionListener(e -> {
+			Object selected = box.getSelectedItem();
+
+			if (selected instanceof MapRenderer.TerrainLayer terrain) {
+				viewer.setTerrainLayer(terrain);
+			} else if (selected instanceof MapRenderer.Layer plate) {
+				viewer.setLayer(plate);
+			}
+		});
 
 		return labelled("layer", box);
 	}
