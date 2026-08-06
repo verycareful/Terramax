@@ -11,6 +11,8 @@ package com.fury.terramax.core.util;
  * @param neighbourCellX    cell column of the second-nearest site, across the nearest boundary
  * @param neighbourCellZ    cell row of the second-nearest site
  * @param boundaryDistance  perpendicular distance to the boundary with that neighbour, always >= 0
+ * @param alongBoundary     signed position <em>parallel</em> to that boundary, in blocks,
+ *                          measured from the midpoint between the two sites
  */
 public record VoronoiSample(
 		long cellX,
@@ -20,7 +22,8 @@ public record VoronoiSample(
 		double distanceToSite,
 		long neighbourCellX,
 		long neighbourCellZ,
-		double boundaryDistance) {
+		double boundaryDistance,
+		double alongBoundary) {
 
 	/** A stable identity for the owning cell, suitable for hashing plate properties. */
 	public long cellId(final long seed) {

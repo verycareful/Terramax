@@ -195,8 +195,22 @@ public final class PlateMap {
 	}
 
 	/**
-	 * Resolves the owning plate, its nearest neighbour, and the nature of the
-	 * boundary between them.
+	 * Resolves the owning plate, the nearest plate <em>boundary</em>, and what the
+	 * two plates are doing to each other there.
+	 *
+	 * <p><b>The neighbour is the nearest cell of a different plate, not simply the
+	 * second-nearest cell.</b> This distinction is the whole correctness of the
+	 * mountain system. A plate boundary is a property of the plate mosaic, but crust
+	 * cells are sixteen times finer, so as you walk along a boundary the
+	 * second-nearest crust cell keeps changing: sometimes it lies across the plate
+	 * boundary and sometimes it is another cell of your own plate. Taking it blindly
+	 * makes relief switch between full height and nothing from one cell to the next,
+	 * and a range comes out as a chain of cell-shaped mesas with 1,600-block vertical
+	 * walls between them. Measured, not hypothesised: it is what the first cross
+	 * section through a range showed.
+	 *
+	 * <p>Searching for the nearest differing plate instead gives a boundary distance
+	 * that varies continuously along the whole margin, which is what a falloff needs.
 	 */
 	public PlateSample sample(final double worldX, final double worldZ) {
 		double queryX = warp.warpX(worldX, worldZ);
@@ -205,42 +219,34 @@ public final class PlateMap {
 		VoronoiSample cell = voronoi.sample(queryX, queryZ);
 
 		Plate plate = plateOf(cell.cellX(), cell.cellZ());
-		Plate neighbour = plateOf(cell.neighbourCellX(), cell.neighbourCellZ());
-
 		CrustCell crust = crustCellAt(cell.cellX(), cell.cellZ());
-		CrustCell neighbourCrust = crustCellAt(cell.neighbourCellX(), cell.neighbourCellZ());
 
-		// A seam between two crust cells of the same plate is not a plate boundary
-		// and must build nothing. This is what stops every cell edge in the world
-		// growing a mountain range now that cells are 6,000 blocks apart rather than
-		// 100,000, and it is most of the "not every plate pair needs a range" problem
-		// solved structurally rather than by a hashed activity factor.
-		//
-		// In the full design these seams are sutures and carry worn relief scaled by
-		// a hashed age. That is a later slice; here they carry nothing.
-		//
-		// Reporting an effectively infinite boundary distance keeps every downstream
-		// falloff at zero without any of them needing a special case: smoothstep
-		// clamps to 1, and MountainRidge returns 0 past its range width.
-		if (plate.cellX() == neighbour.cellX() && plate.cellZ() == neighbour.cellZ()) {
+		Neighbour across = nearestDifferentPlate(queryX, queryZ, cell, plate);
+
+		// Deep inside a plate there is no boundary within reach. Reporting an
+		// effectively infinite distance keeps every downstream falloff at zero with
+		// no special case: smoothstep clamps to 1, and MountainRidge returns 0 past
+		// its range width.
+		if (across == null) {
 			return new PlateSample(
-					plate, neighbour, crust, neighbourCrust,
+					plate, plate, crust, crust,
 					PlateBoundaryType.NONE,
-					Double.MAX_VALUE,
+					Double.MAX_VALUE, cell.alongBoundary(),
 					0.0, 0.0);
 		}
 
-		double neighbourX = voronoi.sites().pointX(cell.neighbourCellX(), cell.neighbourCellZ());
-		double neighbourZ = voronoi.sites().pointZ(cell.neighbourCellX(), cell.neighbourCellZ());
+		Plate neighbour = across.plate();
+		CrustCell neighbourCrust = crustCellAt(across.cellX(), across.cellZ());
 
-		double axisX = neighbourX - cell.siteX();
-		double axisZ = neighbourZ - cell.siteZ();
+		double axisX = across.siteX() - cell.siteX();
+		double axisZ = across.siteZ() - cell.siteZ();
 		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
 
 		if (axisLength == 0.0) {
 			return new PlateSample(
 					plate, neighbour, crust, neighbourCrust,
-					PlateBoundaryType.TRANSFORM, cell.boundaryDistance(), 0.0, 0.0);
+					PlateBoundaryType.TRANSFORM,
+					across.boundaryDistance(), across.alongBoundary(), 0.0, 0.0);
 		}
 
 		// Unit normal pointing from this plate toward its neighbour, and the
@@ -271,6 +277,112 @@ public final class PlateMap {
 
 		return new PlateSample(
 				plate, neighbour, crust, neighbourCrust,
-				type, cell.boundaryDistance(), convergence, shear);
+				type, across.boundaryDistance(), across.alongBoundary(), convergence, shear);
+	}
+
+	/** A crust cell across a plate boundary, and the frame of that boundary. */
+	private record Neighbour(
+			long cellX, long cellZ,
+			double siteX, double siteZ,
+			Plate plate,
+			double boundaryDistance,
+			double alongBoundary) {
+	}
+
+	/**
+	 * Finds the nearest crust cell belonging to a different plate, and the boundary
+	 * frame between it and the query's own cell.
+	 *
+	 * <p>Returns null when every cell in range belongs to the same plate, which is
+	 * the common case: most of the world is plate interior.
+	 *
+	 * <p>Searches the same neighbourhood the crust Voronoi does. At 6,000-block cells
+	 * that reaches 15,000 blocks, comfortably past the widest range the settings
+	 * allow, so a boundary close enough to build anything is always found.
+	 *
+	 * <p>This is the expensive part of a plate lookup, because each candidate needs
+	 * its plate resolved and that is a weighted nuclei search. Candidates are tested
+	 * nearest-first and the loop stops at the first differing plate, so interiors pay
+	 * the full price and margins, where the answer is usually one of the closest few,
+	 * pay much less.
+	 */
+	private Neighbour nearestDifferentPlate(
+			final double queryX, final double queryZ,
+			final VoronoiSample own, final Plate ownPlate) {
+		long centreX = voronoi.sites().cellX(queryX);
+		long centreZ = voronoi.sites().cellZ(queryZ);
+		int radius = voronoi.searchRadiusCells();
+
+		long bestCellX = 0;
+		long bestCellZ = 0;
+		double bestSiteX = 0.0;
+		double bestSiteZ = 0.0;
+		Plate bestPlate = null;
+		double bestDistanceSq = Double.MAX_VALUE;
+
+		for (int dz = -radius; dz <= radius; dz++) {
+			for (int dx = -radius; dx <= radius; dx++) {
+				long cellX = centreX + dx;
+				long cellZ = centreZ + dz;
+
+				if (cellX == own.cellX() && cellZ == own.cellZ()) {
+					continue;
+				}
+
+				double siteX = voronoi.sites().pointX(cellX, cellZ);
+				double siteZ = voronoi.sites().pointZ(cellX, cellZ);
+
+				double offsetX = siteX - queryX;
+				double offsetZ = siteZ - queryZ;
+				double distanceSq = offsetX * offsetX + offsetZ * offsetZ;
+
+				if (distanceSq >= bestDistanceSq) {
+					continue;
+				}
+
+				Plate candidate = plateOf(cellX, cellZ);
+
+				if (candidate.cellX() == ownPlate.cellX() && candidate.cellZ() == ownPlate.cellZ()) {
+					continue;
+				}
+
+				bestDistanceSq = distanceSq;
+				bestCellX = cellX;
+				bestCellZ = cellZ;
+				bestSiteX = siteX;
+				bestSiteZ = siteZ;
+				bestPlate = candidate;
+			}
+		}
+
+		if (bestPlate == null) {
+			return null;
+		}
+
+		// Canonical ordering, so both sides of the boundary build the same frame and
+		// the grain does not mirror across the crest.
+		boolean flip = own.cellX() > bestCellX
+				|| (own.cellX() == bestCellX && own.cellZ() > bestCellZ);
+
+		double aX = flip ? bestSiteX : own.siteX();
+		double aZ = flip ? bestSiteZ : own.siteZ();
+		double bX = flip ? own.siteX() : bestSiteX;
+		double bZ = flip ? own.siteZ() : bestSiteZ;
+
+		double axisX = bX - aX;
+		double axisZ = bZ - aZ;
+		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
+
+		if (axisLength == 0.0) {
+			return new Neighbour(bestCellX, bestCellZ, bestSiteX, bestSiteZ, bestPlate, 0.0, 0.0);
+		}
+
+		double offsetX = queryX - (aX + bX) * 0.5;
+		double offsetZ = queryZ - (aZ + bZ) * 0.5;
+
+		return new Neighbour(
+				bestCellX, bestCellZ, bestSiteX, bestSiteZ, bestPlate,
+				Math.abs(offsetX * axisX + offsetZ * axisZ) / axisLength,
+				(offsetX * -axisZ + offsetZ * axisX) / axisLength);
 	}
 }

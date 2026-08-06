@@ -32,6 +32,7 @@ package com.fury.terramax.core.terrain;
  * @param regionReliefWavelengthFactor global multiplier on each region type's own
  *                                     declared wavelength, for tuning without
  *                                     editing the type table
+ * @param grain                        parallel ridge structure inside a range
  */
 public record TerrainSettings(
 		double blendWidthFraction,
@@ -48,7 +49,46 @@ public record TerrainSettings(
 		double detailWavelength,
 		double valleyDepth,
 		double valleyWavelength,
-		double regionReliefWavelengthFactor) {
+		double regionReliefWavelengthFactor,
+		Grain grain) {
+
+	/**
+	 * Parallel ridge structure inside a mountain range.
+	 *
+	 * <p>A range without this is one smooth swell. Real ranges are corrugated: a line
+	 * of ridges running the length of the range, separated by valleys. That structure
+	 * comes from sampling noise <b>anisotropically</b> in the boundary's own
+	 * {@code (across, along)} frame rather than in world coordinates. Feed the same
+	 * noise a compressed across-axis and a stretched along-axis and every feature
+	 * comes out many times longer than it is wide, aligned with the range.
+	 *
+	 * <p>The alternative, which the first build used, is isotropic noise multiplying a
+	 * directional envelope. That gives a directional blob with random lumps on it, and
+	 * no amount of tuning turns lumps into ridges.
+	 *
+	 * @param acrossWavelength spacing between parallel ridges, in blocks
+	 * @param alongFactor      how many times longer a ridge is than it is wide
+	 * @param depth            how far valleys cut into the range envelope, in [0, 1];
+	 *                         0.5 puts valley floors at half the crest height
+	 * @param octaves          detail in the ridge field
+	 */
+	public record Grain(double acrossWavelength, double alongFactor, double depth, int octaves) {
+		public Grain {
+			if (depth < 0.0 || depth > 1.0) {
+				throw new IllegalArgumentException("depth must be in [0, 1], got " + depth);
+			}
+
+			if (alongFactor < 1.0) {
+				throw new IllegalArgumentException(
+						"alongFactor must be at least 1.0, got " + alongFactor
+								+ ". Below 1 the grain runs across the range rather than along it.");
+			}
+		}
+
+		public double alongWavelength() {
+			return acrossWavelength * alongFactor;
+		}
+	}
 
 	/**
 	 * Defaults sized for the y=-256 to 1792 dimension.
@@ -86,7 +126,14 @@ public record TerrainSettings(
 				900.0,
 				90.0,
 				7000.0,
-				1.0);
+				1.0,
+
+				// 900-block ridge spacing at 12x elongation gives ridges roughly
+				// 11,000 blocks long inside a range 6,400 wide, so a few run most of
+				// its length rather than dozens of short ones. Depth 0.55 puts valley
+				// floors a little over half the crest height, which is about right
+				// for a young range.
+				new Grain(900.0, 12.0, 0.55, 3));
 	}
 
 	public double blendWidthBlocks(final double crustSpacing) {

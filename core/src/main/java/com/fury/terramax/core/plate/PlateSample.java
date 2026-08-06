@@ -17,7 +17,8 @@ package com.fury.terramax.core.plate;
  * @param crust            crust cell this position sits in
  * @param neighbourCrust   crust cell immediately across the boundary
  * @param boundaryType     what the two plates are doing to each other
- * @param boundaryDistance blocks to the nearest plate boundary
+ * @param boundaryDistance blocks to the nearest plate boundary, the across-range axis
+ * @param alongBoundary    blocks along that boundary, the along-range axis
  * @param convergence      closing speed along the boundary normal; positive closes
  * @param shear            sliding speed along the boundary
  */
@@ -28,6 +29,7 @@ public record PlateSample(
 		CrustCell neighbourCrust,
 		PlateBoundaryType boundaryType,
 		double boundaryDistance,
+		double alongBoundary,
 		double convergence,
 		double shear) {
 

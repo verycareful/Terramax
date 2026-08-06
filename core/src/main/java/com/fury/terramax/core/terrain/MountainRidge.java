@@ -17,24 +17,43 @@ import com.fury.terramax.core.util.FractalNoise2D;
  * nothing like a real margin.
  */
 public final class MountainRidge {
-	/** Separates relief variation from every other noise field. */
+	/** Separates the two ridge fields from each other and from everything else. */
 	private static final long SALT_RELIEF = 0x9E3779B185EBCA87L;
+	private static final long SALT_GRAIN = 0x3C79AC492BA7B653L;
 
 	/** Octaves in the along-range variation. Few, because it should undulate, not fizz. */
 	private static final int RELIEF_OCTAVES = 3;
 
-	/** Along-range variation wavelength, in plate spacings. */
+	/** Along-range variation wavelength, in crust spacings. */
 	private static final double RELIEF_WAVELENGTH_FACTOR = 0.55;
+
+	/**
+	 * How sharply ridges are pinched.
+	 *
+	 * <p>{@code 1 - |noise|} already peaks along the zero crossings of the field,
+	 * which is what makes a connected line of ridges rather than isolated bumps.
+	 * Raising it above 1 narrows the crests and widens the valleys between them, which
+	 * is the difference between rolling swells and mountains.
+	 */
+	private static final double GRAIN_SHARPNESS = 1.6;
 
 	private final TerrainSettings settings;
 	private final double rangeWidthBlocks;
 	private final FractalNoise2D reliefVariation;
+	private final FractalNoise2D grain;
 
-	public MountainRidge(final long seed, final TerrainSettings settings, final double plateSpacing) {
+	public MountainRidge(final long seed, final TerrainSettings settings, final double crustSpacing) {
 		this.settings = settings;
-		this.rangeWidthBlocks = settings.rangeWidthBlocks(plateSpacing);
+		this.rangeWidthBlocks = settings.rangeWidthBlocks(crustSpacing);
 		this.reliefVariation = FractalNoise2D.standard(
-				seed ^ SALT_RELIEF, RELIEF_OCTAVES, plateSpacing * RELIEF_WAVELENGTH_FACTOR);
+				seed ^ SALT_RELIEF, RELIEF_OCTAVES, crustSpacing * RELIEF_WAVELENGTH_FACTOR);
+
+		// Unit wavelength: this field is fed coordinates already divided by the
+		// grain's own across and along wavelengths, which is what makes the sampling
+		// anisotropic. Building it at a single wavelength would force both axes to
+		// share one and there would be no grain.
+		this.grain = FractalNoise2D.standard(
+				seed ^ SALT_GRAIN, settings.grain().octaves(), 1.0);
 	}
 
 	/** Height offset in blocks at the given position. */
@@ -58,9 +77,39 @@ public final class MountainRidge {
 		// Vary height along the range so it is not a uniform wall. Without this a
 		// mountain range is the same height for its entire length, which reads as
 		// artificial more immediately than almost anything else.
-		double variation = 1.0 + reliefVariation.sample(worldX, worldZ) * settings.reliefVariationFraction();
+		double variation = 1.0 + reliefVariation.sample(worldX, worldZ)
+				* settings.reliefVariationFraction();
 
-		return peak * falloff * motion * Math.max(0.0, variation);
+		double envelope = peak * falloff * motion * Math.max(0.0, variation);
+
+		return envelope * grainFactor(sample);
+	}
+
+	/**
+	 * Carves parallel ridges and valleys into the range envelope.
+	 *
+	 * <p>Sampled in the boundary's own frame with the across-axis compressed and the
+	 * along-axis stretched, so every feature comes out {@code alongFactor} times
+	 * longer than it is wide and aligned with the range. This is the entire mechanism:
+	 * there is no ridge generator, only ordinary noise read through an anisotropic
+	 * coordinate system.
+	 *
+	 * <p>Returns a multiplier in {@code [1 - depth, 1]}, so crests keep the full
+	 * envelope height and valley floors drop to a fraction of it. Multiplicative
+	 * rather than additive because a valley should cut proportionally: a 200-block
+	 * range gets 200-block-scale valleys and a 1,400-block range gets deep ones,
+	 * which is the erosion argument for scaling relief with local relief.
+	 */
+	private double grainFactor(final PlateSample sample) {
+		var g = settings.grain();
+
+		double ridged = 1.0 - Math.abs(grain.sample(
+				sample.boundaryDistance() / g.acrossWavelength(),
+				sample.alongBoundary() / g.alongWavelength()));
+
+		double crest = Math.pow(Math.max(0.0, ridged), GRAIN_SHARPNESS);
+
+		return 1.0 - g.depth() * (1.0 - crest);
 	}
 
 	/**

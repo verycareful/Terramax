@@ -30,6 +30,16 @@ public final class VoronoiSolver {
 	}
 
 	/**
+	 * Cells searched in each direction around a query.
+	 *
+	 * <p>Exposed so callers running their own search over the same neighbourhood
+	 * cannot silently disagree with this one about how far it reaches.
+	 */
+	public int searchRadiusCells() {
+		return SEARCH_RADIUS_CELLS;
+	}
+
+	/**
 	 * Finds the owning plate and the distance to its nearest boundary.
 	 *
 	 * <p>Boundary distance is the perpendicular distance to the bisector between the
@@ -39,6 +49,18 @@ public final class VoronoiSolver {
 	 * built from it vary in width for no physical reason. The perpendicular distance
 	 * is in blocks and behaves consistently, which matters when a mountain profile is
 	 * a function of it.
+	 *
+	 * <p><b>The two boundary coordinates form a local frame.</b>
+	 * {@code boundaryDistance} is the across-boundary axis and {@code alongBoundary}
+	 * is the parallel one, both in blocks. Together they let a consumer sample noise
+	 * anisotropically: stretched along a range and compressed across it, which is
+	 * what turns a smooth swell into parallel ridges. Without the along coordinate
+	 * the only available structure is isotropic, and a directional envelope times a
+	 * directionless noise is a directional blob with random lumps on it.
+	 *
+	 * <p>The frame is only meaningful near the boundary it belongs to, and it changes
+	 * discontinuously where the second-nearest site changes. Those points are triple
+	 * junctions, where real ranges also go structurally incoherent.
 	 */
 	public VoronoiSample sample(final double worldX, final double worldZ) {
 		long centreX = sites.cellX(worldX);
@@ -90,41 +112,42 @@ public final class VoronoiSolver {
 			}
 		}
 
-		double boundaryDistance = perpendicularDistanceToBisector(
-				worldX, worldZ, nearestX, nearestZ, secondX, secondZ);
+		// Order the pair canonically before building the frame. Taking it as
+		// nearest-then-second would flip the axis when the same boundary is queried
+		// from the far side, which mirrors the along-coordinate and would tear any
+		// grain built on it straight down the crest of every range.
+		boolean flip = nearestCellX > secondCellX
+				|| (nearestCellX == secondCellX && nearestCellZ > secondCellZ);
+
+		double aX = flip ? secondX : nearestX;
+		double aZ = flip ? secondZ : nearestZ;
+		double bX = flip ? nearestX : secondX;
+		double bZ = flip ? nearestZ : secondZ;
+
+		double axisX = bX - aX;
+		double axisZ = bZ - aZ;
+		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
+
+		double boundaryDistance = 0.0;
+		double alongBoundary = 0.0;
+
+		// Coincident sites have no bisector. Impossible while PoissonDisk guarantees a
+		// positive minimum separation, but leaving both at zero keeps this total.
+		if (axisLength > 0.0) {
+			double offsetX = worldX - (aX + bX) * 0.5;
+			double offsetZ = worldZ - (aZ + bZ) * 0.5;
+
+			boundaryDistance = Math.abs(offsetX * axisX + offsetZ * axisZ) / axisLength;
+			alongBoundary = (offsetX * -axisZ + offsetZ * axisX) / axisLength;
+		}
 
 		return new VoronoiSample(
 				nearestCellX, nearestCellZ,
 				nearestX, nearestZ,
 				Math.sqrt(nearestSq),
 				secondCellX, secondCellZ,
-				boundaryDistance);
+				boundaryDistance,
+				alongBoundary);
 	}
 
-	/**
-	 * Distance from a query point to the perpendicular bisector of two sites.
-	 *
-	 * <p>The bisector is the Voronoi edge between them. Its normal is the direction
-	 * from one site to the other, and it passes through their midpoint, so the
-	 * distance is the projection of {@code query - midpoint} onto that normal.
-	 */
-	private static double perpendicularDistanceToBisector(
-			final double queryX, final double queryZ,
-			final double aX, final double aZ,
-			final double bX, final double bZ) {
-		double axisX = bX - aX;
-		double axisZ = bZ - aZ;
-		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
-
-		// Coincident sites have no bisector. Impossible while PoissonDisk guarantees
-		// a positive minimum separation, but returning 0 keeps this total.
-		if (axisLength == 0.0) {
-			return 0.0;
-		}
-
-		double midX = (aX + bX) * 0.5;
-		double midZ = (aZ + bZ) * 0.5;
-
-		return Math.abs((queryX - midX) * axisX + (queryZ - midZ) * axisZ) / axisLength;
-	}
 }

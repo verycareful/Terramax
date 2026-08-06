@@ -38,6 +38,17 @@ public final class SimulatorMain {
 	/** Crust cells crossed by the section. Enough to show several boundaries. */
 	private static final double CROSS_SECTION_CELLS = 100.0;
 
+	/**
+	 * Samples per axis when hunting for the tallest terrain.
+	 *
+	 * <p>Coarse on purpose. A range is thousands of blocks wide, so this only has to
+	 * land somewhere on one; the close-up then shows the whole thing.
+	 */
+	private static final int RANGE_SEARCH_GRID = 200;
+
+	/** Width of the range close-up, in crust cells. About one range across. */
+	private static final double RANGE_SPAN_CELLS = 4.0;
+
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
 
@@ -86,6 +97,7 @@ public final class SimulatorMain {
 		writeTerrain("region-id-local", local, world,
 				MapRenderer.TerrainLayer.REGION_ID);
 
+		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
 
 		printStatistics(TerrainStatistics.measure(
@@ -176,6 +188,62 @@ public final class SimulatorMain {
 			System.out.println();
 			System.out.println("  *** OUT OF BOUNDS: terrain leaves the dimension and will be clipped");
 		}
+	}
+
+	/**
+	 * Finds the tallest terrain in the continental view and renders a close-up of it.
+	 *
+	 * <p>Most of the world is plate interior, so a view dropped at the origin usually
+	 * contains no mountains at all and says nothing about whether the range machinery
+	 * works. Hunting for one by panning is not a workflow. This goes and finds one.
+	 *
+	 * <p>Also prints a section straight across it, since a top-down view cannot show
+	 * whether the ridges have valleys between them or are merely shaded to look as
+	 * though they do.
+	 */
+	private static void writeRangeDetail(
+			final TerrainModel.Snapshot world, final double spacing) throws IOException {
+		double span = spacing * CONTINENTAL_SPAN_CELLS;
+		double step = span / RANGE_SEARCH_GRID;
+		double origin = -span * 0.5;
+
+		double bestX = 0.0;
+		double bestZ = 0.0;
+		double best = -Double.MAX_VALUE;
+
+		for (int iz = 0; iz < RANGE_SEARCH_GRID; iz++) {
+			for (int ix = 0; ix < RANGE_SEARCH_GRID; ix++) {
+				double worldX = origin + ix * step;
+				double worldZ = origin + iz * step;
+				double height = world.terrain().heightAt(worldX, worldZ);
+
+				if (height > best) {
+					best = height;
+					bestX = worldX;
+					bestZ = worldZ;
+				}
+			}
+		}
+
+		MapView view = new MapView(bestX, bestZ, spacing * RANGE_SPAN_CELLS, IMAGE_PIXELS);
+
+		System.out.println();
+		System.out.printf("Tallest terrain found at %,.0f, %,.0f at y=%,.0f%n", bestX, bestZ, best);
+
+		writeTerrain("range-raw", view, world, MapRenderer.TerrainLayer.ELEVATION_RAW);
+		writeTerrain("range-elevation", view, world,
+				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC);
+
+		double reach = spacing * RANGE_SPAN_CELLS * 0.5;
+		var section = CrossSectionPlotter.plot(
+				world.terrain(),
+				bestX - reach, bestZ - reach * 0.3,
+				bestX + reach, bestZ + reach * 0.3,
+				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL,
+				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT);
+
+		ImageIO.write(section, "PNG", OUTPUT_DIR.resolve("range-section.png").toFile());
+		System.out.printf("  %-30s %,10.0f blocks along%n", "range-section", reach * 2.0);
 	}
 
 	/**
