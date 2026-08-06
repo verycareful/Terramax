@@ -1,5 +1,6 @@
 package com.fury.terramax.core.terrain;
 
+import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.util.FractalNoise2D;
 
@@ -56,14 +57,59 @@ public final class MountainRidge {
 				seed ^ SALT_GRAIN, settings.grain().octaves(), 1.0);
 	}
 
-	/** Height offset in blocks at the given position. */
-	public double offsetAt(final PlateSample sample, final double worldX, final double worldZ) {
-		double falloff = falloff(sample.boundaryDistance());
+	/**
+	 * Total relief at a position, combined over every plate boundary within reach.
+	 *
+	 * <p>Combining rather than taking the nearest boundary alone is a correctness fix,
+	 * not a refinement. Where the nearest differing plate changes, the bisector jumps
+	 * and so does the distance, so a nearest-only range went from full height to
+	 * nothing between adjacent columns: cross sections showed vertical walls a
+	 * thousand blocks tall.
+	 *
+	 * <p><b>Averaged and then scaled by the strongest falloff</b>, rather than summed.
+	 * A plain sum is continuous but unbounded: three collision ranges meeting at a
+	 * triple junction add to 4,200 blocks and terrain reached y=5,358 against a
+	 * ceiling of 1,792. This form keeps both properties that matter. It still fades to
+	 * zero at the range edge, because the scaling falloff does. And two overlapping
+	 * ranges average instead of stacking, so the result is bounded by the tallest
+	 * single contribution.
+	 *
+	 * <p>Continuity is free either way: a boundary entering or leaving the set does so
+	 * with a falloff of exactly zero, contributing nothing to numerator, denominator
+	 * or maximum.
+	 */
+	public double totalOffsetAt(final PlateMap plates, final double worldX, final double worldZ) {
+		// A three-element array because a lambda cannot close over mutable locals:
+		// weighted relief, total weight, strongest weight.
+		double[] acc = new double[3];
 
-		if (falloff <= 0.0) {
+		plates.forEachBoundary(worldX, worldZ, rangeWidthBlocks, boundary -> {
+			double falloff = falloff(boundary.boundaryDistance());
+
+			if (falloff <= 0.0) {
+				return;
+			}
+
+			acc[0] += falloff * reliefAt(boundary, worldX, worldZ);
+			acc[1] += falloff;
+			acc[2] = Math.max(acc[2], falloff);
+		});
+
+		if (acc[1] <= 0.0) {
 			return 0.0;
 		}
 
+		return acc[0] / acc[1] * acc[2];
+	}
+
+	/**
+	 * Relief this boundary would build at full strength, before any distance falloff.
+	 *
+	 * <p>Separated from the falloff so {@link #totalOffsetAt} can weight several
+	 * boundaries against each other. Multiplying the falloff in here instead would
+	 * make the average count near boundaries and far ones equally.
+	 */
+	private double reliefAt(final PlateSample sample, final double worldX, final double worldZ) {
 		double peak = peakRelief(sample);
 
 		if (peak == 0.0) {
@@ -80,9 +126,7 @@ public final class MountainRidge {
 		double variation = 1.0 + reliefVariation.sample(worldX, worldZ)
 				* settings.reliefVariationFraction();
 
-		double envelope = peak * falloff * motion * Math.max(0.0, variation);
-
-		return envelope * grainFactor(sample);
+		return peak * motion * Math.max(0.0, variation) * grainFactor(sample);
 	}
 
 	/**

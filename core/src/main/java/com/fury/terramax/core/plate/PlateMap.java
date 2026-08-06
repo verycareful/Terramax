@@ -235,6 +235,18 @@ public final class PlateMap {
 					0.0, 0.0);
 		}
 
+		return classify(plate, crust, cell, across);
+	}
+
+	/**
+	 * Works out what two plates are doing to each other across a given boundary.
+	 *
+	 * <p>Shared by {@link #sample} and {@link #forEachBoundary} so the two cannot
+	 * disagree about how a boundary is classified.
+	 */
+	private PlateSample classify(
+			final Plate plate, final CrustCell crust,
+			final VoronoiSample cell, final Neighbour across) {
 		Plate neighbour = across.plate();
 		CrustCell neighbourCrust = crustCellAt(across.cellX(), across.cellZ());
 
@@ -280,6 +292,109 @@ public final class PlateMap {
 				type, across.boundaryDistance(), across.alongBoundary(), convergence, shear);
 	}
 
+	/**
+	 * Builds the boundary frame between the query's own cell and a given other cell.
+	 *
+	 * <p>Orders the pair canonically, so both sides of a boundary compute the same
+	 * frame and grain built on it does not mirror across the crest.
+	 */
+	private Neighbour frameAgainst(
+			final double queryX, final double queryZ, final VoronoiSample own,
+			final long otherCellX, final long otherCellZ, final Plate otherPlate) {
+		double otherSiteX = voronoi.sites().pointX(otherCellX, otherCellZ);
+		double otherSiteZ = voronoi.sites().pointZ(otherCellX, otherCellZ);
+
+		boolean flip = own.cellX() > otherCellX
+				|| (own.cellX() == otherCellX && own.cellZ() > otherCellZ);
+
+		double aX = flip ? otherSiteX : own.siteX();
+		double aZ = flip ? otherSiteZ : own.siteZ();
+		double bX = flip ? own.siteX() : otherSiteX;
+		double bZ = flip ? own.siteZ() : otherSiteZ;
+
+		double axisX = bX - aX;
+		double axisZ = bZ - aZ;
+		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
+
+		if (axisLength == 0.0) {
+			return new Neighbour(
+					otherCellX, otherCellZ, otherSiteX, otherSiteZ, otherPlate, 0.0, 0.0);
+		}
+
+		double offsetX = queryX - (aX + bX) * 0.5;
+		double offsetZ = queryZ - (aZ + bZ) * 0.5;
+
+		return new Neighbour(
+				otherCellX, otherCellZ, otherSiteX, otherSiteZ, otherPlate,
+				Math.abs(offsetX * axisX + offsetZ * axisZ) / axisLength,
+				(offsetX * -axisZ + offsetZ * axisX) / axisLength);
+	}
+
+	/** Receives one boundary at a time from {@link #forEachBoundary}. */
+	@FunctionalInterface
+	public interface BoundaryVisitor {
+		void visit(PlateSample boundary);
+	}
+
+	/**
+	 * Visits <em>every</em> plate boundary within reach of a position, not just the
+	 * nearest.
+	 *
+	 * <p>Relief built from the nearest boundary alone is discontinuous: where the
+	 * nearest differing plate changes, the bisector jumps and so does the distance, so
+	 * a range can go from full height to nothing between adjacent columns. Cross
+	 * sections showed exactly that, as vertical walls a thousand blocks tall.
+	 *
+	 * <p>Summing over all boundaries in reach fixes it, and the continuity is free
+	 * rather than engineered. Each contribution is scaled by a falloff that reaches
+	 * zero at {@code maxDistance}, so a boundary entering or leaving the set does so
+	 * at zero and the total never steps.
+	 *
+	 * <p>Also what triple junctions need. Three plates meet, three boundaries overlap,
+	 * and the terrain there is the sum of what all three are doing, which is why real
+	 * junctions are structurally chaotic.
+	 *
+	 * @param maxDistance boundaries further than this contribute nothing, so are skipped
+	 */
+	public void forEachBoundary(
+			final double worldX, final double worldZ,
+			final double maxDistance, final BoundaryVisitor visitor) {
+		double queryX = warp.warpX(worldX, worldZ);
+		double queryZ = warp.warpZ(worldX, worldZ);
+
+		VoronoiSample cell = voronoi.sample(queryX, queryZ);
+		Plate plate = plateOf(cell.cellX(), cell.cellZ());
+		CrustCell crust = crustCellAt(cell.cellX(), cell.cellZ());
+
+		long centreX = voronoi.sites().cellX(queryX);
+		long centreZ = voronoi.sites().cellZ(queryZ);
+		int radius = voronoi.searchRadiusCells();
+
+		for (int dz = -radius; dz <= radius; dz++) {
+			for (int dx = -radius; dx <= radius; dx++) {
+				long cellX = centreX + dx;
+				long cellZ = centreZ + dz;
+
+				if (cellX == cell.cellX() && cellZ == cell.cellZ()) {
+					continue;
+				}
+
+				Plate candidate = plateOf(cellX, cellZ);
+
+				if (candidate.cellX() == plate.cellX() && candidate.cellZ() == plate.cellZ()) {
+					continue;
+				}
+
+				Neighbour across = frameAgainst(
+						queryX, queryZ, cell, cellX, cellZ, candidate);
+
+				if (across.boundaryDistance() < maxDistance) {
+					visitor.visit(classify(plate, crust, cell, across));
+				}
+			}
+		}
+	}
+
 	/** A crust cell across a plate boundary, and the frame of that boundary. */
 	private record Neighbour(
 			long cellX, long cellZ,
@@ -315,8 +430,6 @@ public final class PlateMap {
 
 		long bestCellX = 0;
 		long bestCellZ = 0;
-		double bestSiteX = 0.0;
-		double bestSiteZ = 0.0;
 		Plate bestPlate = null;
 		double bestDistanceSq = Double.MAX_VALUE;
 
@@ -349,8 +462,6 @@ public final class PlateMap {
 				bestDistanceSq = distanceSq;
 				bestCellX = cellX;
 				bestCellZ = cellZ;
-				bestSiteX = siteX;
-				bestSiteZ = siteZ;
 				bestPlate = candidate;
 			}
 		}
@@ -359,30 +470,6 @@ public final class PlateMap {
 			return null;
 		}
 
-		// Canonical ordering, so both sides of the boundary build the same frame and
-		// the grain does not mirror across the crest.
-		boolean flip = own.cellX() > bestCellX
-				|| (own.cellX() == bestCellX && own.cellZ() > bestCellZ);
-
-		double aX = flip ? bestSiteX : own.siteX();
-		double aZ = flip ? bestSiteZ : own.siteZ();
-		double bX = flip ? own.siteX() : bestSiteX;
-		double bZ = flip ? own.siteZ() : bestSiteZ;
-
-		double axisX = bX - aX;
-		double axisZ = bZ - aZ;
-		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
-
-		if (axisLength == 0.0) {
-			return new Neighbour(bestCellX, bestCellZ, bestSiteX, bestSiteZ, bestPlate, 0.0, 0.0);
-		}
-
-		double offsetX = queryX - (aX + bX) * 0.5;
-		double offsetZ = queryZ - (aZ + bZ) * 0.5;
-
-		return new Neighbour(
-				bestCellX, bestCellZ, bestSiteX, bestSiteZ, bestPlate,
-				Math.abs(offsetX * axisX + offsetZ * axisZ) / axisLength,
-				(offsetX * -axisZ + offsetZ * axisX) / axisLength);
+		return frameAgainst(queryX, queryZ, own, bestCellX, bestCellZ, bestPlate);
 	}
 }

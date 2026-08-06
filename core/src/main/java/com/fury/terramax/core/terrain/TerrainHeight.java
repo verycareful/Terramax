@@ -91,7 +91,7 @@ public final class TerrainHeight implements HeightField {
 
 		double height = blendedBase(plate, interiority);
 		height += regionRelief(region, interiority, worldX, worldZ);
-		height += ridge.offsetAt(plate, worldX, worldZ);
+		height += ridge.totalOffsetAt(plates, worldX, worldZ);
 		height += landDetail(height, worldX, worldZ);
 
 		return height;
