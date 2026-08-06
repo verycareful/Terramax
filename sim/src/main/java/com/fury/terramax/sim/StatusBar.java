@@ -58,9 +58,12 @@ public final class StatusBar extends JPanel {
 		var region = world.regions().sample(worldX, worldZ, plate.crust().crustType()).region();
 		double height = world.terrain().heightAt(worldX, worldZ);
 
+		double celsius = world.temperature().at(worldX, worldZ, height);
+
 		cursor.setText(String.format(
-				"x %,.0f   z %,.0f   y %,.0f   %s   %s   plate %d,%d",
-				worldX, worldZ, height,
+				"x %,.0f   z %,.0f   y %,.0f   %.1f C   lat %.2f   %s   %s   plate %d,%d",
+				worldX, worldZ, height, celsius,
+				world.temperature().latitude(worldZ),
 				plate.crust().crustType().name().toLowerCase(),
 				region.type().name().toLowerCase().replace('_', ' '),
 				plate.plate().cellX(), plate.plate().cellZ()));

@@ -83,6 +83,28 @@ public final class LegendPanel extends JPanel {
 			case REGION_TYPE -> drawRegionTypes(g, x, y);
 
 			case REGION_ID -> g.drawString("one hue per region", x, y);
+
+			case TEMPERATURE -> {
+				g.drawString("cold blue to hot red", x, y);
+				g.drawString("-45 C to +40 C", x, y + ROW_HEIGHT);
+			}
+
+			case LIFE_ZONE -> {
+				String[] zones = {"forest, above 6 C", "alpine, 6 C to -4 C",
+					"permanent snow, below -4 C", "ocean"};
+				Color[] colours = {new Color(58, 104, 58), new Color(150, 158, 108),
+					new Color(244, 246, 250), new Color(38, 70, 120)};
+
+				int row = y;
+
+				for (int i = 0; i < zones.length; i++) {
+					g.setColor(colours[i]);
+					g.fillRect(x, row - SWATCH + MARGIN, SWATCH, SWATCH);
+					g.setColor(TEXT);
+					g.drawString(zones[i], x + SWATCH + 8, row);
+					row += ROW_HEIGHT;
+				}
+			}
 		}
 	}
 

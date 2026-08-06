@@ -1,5 +1,7 @@
 package com.fury.terramax.sim;
 
+import com.fury.terramax.core.climate.ClimateSettings;
+import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.region.RegionMap;
@@ -28,6 +30,7 @@ public final class TerrainModel {
 	private PlateMapSettings plateSettings;
 	private RegionSettings regionSettings;
 	private TerrainSettings terrainSettings;
+	private ClimateSettings climateSettings;
 
 	private Snapshot snapshot;
 
@@ -36,6 +39,7 @@ public final class TerrainModel {
 		this.plateSettings = PlateMapSettings.defaults();
 		this.regionSettings = RegionSettings.defaults();
 		this.terrainSettings = TerrainSettings.defaults();
+		this.climateSettings = ClimateSettings.defaults();
 
 		rebuild();
 	}
@@ -47,7 +51,8 @@ public final class TerrainModel {
 	 * change mid-render would leave the plate map and the terrain disagreeing about
 	 * what world they are describing.
 	 */
-	public record Snapshot(PlateMap plates, RegionMap regions, TerrainHeight terrain) {
+	public record Snapshot(
+			PlateMap plates, RegionMap regions, TerrainHeight terrain, TemperatureField temperature) {
 	}
 
 	public Snapshot snapshot() {
@@ -90,11 +95,22 @@ public final class TerrainModel {
 		rebuild();
 	}
 
+	public ClimateSettings climateSettings() {
+		return climateSettings;
+	}
+
+	public void setClimateSettings(final ClimateSettings settings) {
+		this.climateSettings = settings;
+		rebuild();
+	}
+
 	private void rebuild() {
 		PlateMap plates = new PlateMap(seed, plateSettings);
 		RegionMap regions = new RegionMap(seed, regionSettings);
 
 		this.snapshot = new Snapshot(
-				plates, regions, new TerrainHeight(seed, plates, regions, terrainSettings));
+				plates, regions,
+				new TerrainHeight(seed, plates, regions, terrainSettings),
+				new TemperatureField(seed, climateSettings));
 	}
 }

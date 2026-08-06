@@ -299,7 +299,7 @@ public final class MapPanel extends JPanel {
 
 			BufferedImage image = requestedTerrain != null
 					? MapRenderer.renderTerrainProgressive(
-							world.terrain(), world.plates(), world.regions(), view, requestedTerrain,
+							world, view, requestedTerrain,
 							MIN_Y, MAX_Y, SEA_LEVEL, partial -> showPartial(partial, view))
 					: MapRenderer.renderProgressive(
 							world.plates(), view, requestedPlate, partial -> showPartial(partial, view));

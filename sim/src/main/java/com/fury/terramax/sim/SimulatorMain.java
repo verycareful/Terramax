@@ -111,6 +111,10 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.REGION_TYPE);
 		writeTerrain("region-id-local", local, world,
 				MapRenderer.TerrainLayer.REGION_ID);
+		writeTerrain("temperature-continental", continental, world,
+				MapRenderer.TerrainLayer.TEMPERATURE);
+		writeTerrain("life-zone-continental", continental, world,
+				MapRenderer.TerrainLayer.LIFE_ZONE);
 
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
@@ -359,8 +363,7 @@ public final class SimulatorMain {
 			final TerrainModel.Snapshot world,
 			final MapRenderer.TerrainLayer layer) throws IOException {
 		write(name, view, MapRenderer.renderTerrain(
-				world.terrain(), world.plates(), world.regions(), view, layer,
-				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));
+				world, view, layer, MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));
 	}
 
 	private static void write(

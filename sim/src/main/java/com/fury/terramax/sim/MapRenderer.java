@@ -3,6 +3,7 @@ package com.fury.terramax.sim;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 
+import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.region.RegionMap;
@@ -216,7 +217,66 @@ public final class MapRenderer {
 		REGION_TYPE,
 
 		/** A stable colour per region, to check region size and shape. */
-		REGION_ID
+		REGION_ID,
+
+		/** Temperature in degrees C, cold blue through white to hot red. */
+		TEMPERATURE,
+
+		/**
+		 * Life zones, cut by treeline and snowline.
+		 *
+		 * <p>The layer that proves the lapse rate works. Neither line is authored:
+		 * both are contours where the temperature field crosses a fixed threshold, so
+		 * a tropical mountain and an arctic shoreline reach the same zone at wildly
+		 * different altitudes without a single per-range setting.
+		 */
+		LIFE_ZONE
+	}
+
+	/** Cold to hot, in degrees C. Diverging about freezing rather than about zero. */
+	private static final Color[] TEMPERATURE_RAMP = {
+		new Color(40, 40, 120),
+		new Color(70, 130, 200),
+		new Color(180, 220, 240),
+		new Color(250, 245, 200),
+		new Color(240, 170, 80),
+		new Color(200, 60, 40)
+	};
+
+	/** Coldest and hottest the temperature ramp spans, in degrees C. */
+	private static final double TEMPERATURE_MIN = -45.0;
+	private static final double TEMPERATURE_MAX = 40.0;
+
+	private static final Color ZONE_OCEAN = new Color(38, 70, 120);
+	private static final Color ZONE_FOREST = new Color(58, 104, 58);
+	private static final Color ZONE_ALPINE = new Color(150, 158, 108);
+	private static final Color ZONE_SNOW = new Color(244, 246, 250);
+
+	private static int temperatureColour(
+			final HeightField field, final TemperatureField climate,
+			final double worldX, final double worldZ) {
+		double celsius = climate.at(worldX, worldZ, field.heightAt(worldX, worldZ));
+
+		return rampColour(TEMPERATURE_RAMP,
+				(celsius - TEMPERATURE_MIN) / (TEMPERATURE_MAX - TEMPERATURE_MIN)).getRGB();
+	}
+
+	private static int lifeZoneColour(
+			final HeightField field, final TemperatureField climate,
+			final double worldX, final double worldZ, final int seaLevel) {
+		double height = field.heightAt(worldX, worldZ);
+
+		if (height <= seaLevel) {
+			return ZONE_OCEAN.getRGB();
+		}
+
+		double celsius = climate.at(worldX, worldZ, height);
+
+		if (celsius < TemperatureField.SNOWLINE_CELSIUS) {
+			return ZONE_SNOW.getRGB();
+		}
+
+		return (celsius < TemperatureField.TREELINE_CELSIUS ? ZONE_ALPINE : ZONE_FOREST).getRGB();
 	}
 
 	public static BufferedImage render(final PlateMap plates, final MapView view, final Layer layer) {
@@ -250,19 +310,21 @@ public final class MapRenderer {
 	}
 
 	public static BufferedImage renderTerrain(
-			final HeightField field, final PlateMap plates, final RegionMap regions,
-			final MapView view, final TerrainLayer layer,
+			final TerrainModel.Snapshot world, final MapView view, final TerrainLayer layer,
 			final int minY, final int maxY, final int seaLevel) {
-		return renderTerrainProgressive(
-				field, plates, regions, view, layer, minY, maxY, seaLevel, image -> {
-				});
+		return renderTerrainProgressive(world, view, layer, minY, maxY, seaLevel, image -> {
+		});
 	}
 
 	public static BufferedImage renderTerrainProgressive(
-			final HeightField field, final PlateMap plates, final RegionMap regions,
-			final MapView view, final TerrainLayer layer,
+			final TerrainModel.Snapshot world, final MapView view, final TerrainLayer layer,
 			final int minY, final int maxY, final int seaLevel,
 			final TileRenderer.TileListener listener) {
+		HeightField field = world.terrain();
+		PlateMap plates = world.plates();
+		RegionMap regions = world.regions();
+		TemperatureField climate = world.temperature();
+
 		return TileRenderer.render(view, (worldX, worldZ) -> switch (layer) {
 			case ELEVATION_MAGMA ->
 					magmaColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
@@ -272,6 +334,8 @@ public final class MapRenderer {
 					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
+			case TEMPERATURE -> temperatureColour(field, climate, worldX, worldZ);
+			case LIFE_ZONE -> lifeZoneColour(field, climate, worldX, worldZ, seaLevel);
 		}, listener);
 	}
 
