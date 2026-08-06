@@ -81,7 +81,11 @@ public final class TerrainHeight implements HeightField {
 
 	@Override
 	public double heightAt(final double worldX, final double worldZ) {
-		PlateSample plate = plates.sample(worldX, worldZ);
+		// One pass: the plate search is the expensive part of a lookup, and asking for
+		// the nearest boundary and the relief separately ran it twice.
+		MountainRidge.Result ridged = ridge.evaluate(plates, worldX, worldZ);
+		PlateSample plate = ridged.nearest();
+
 		RegionSample region = regions.sample(worldX, worldZ, plate.crust().crustType());
 
 		// How far into the plate's interior this position is: 0 at a boundary,
@@ -91,7 +95,7 @@ public final class TerrainHeight implements HeightField {
 
 		double height = blendedBase(plate, interiority);
 		height += regionRelief(region, interiority, worldX, worldZ);
-		height += ridge.totalOffsetAt(plates, worldX, worldZ);
+		height += ridged.relief();
 		height += landDetail(height, worldX, worldZ);
 
 		return height;

@@ -49,6 +49,21 @@ public final class SimulatorMain {
 	/** Width of the range close-up, in crust cells. About one range across. */
 	private static final double RANGE_SPAN_CELLS = 4.0;
 
+	/** Columns evaluated before timing starts, so the JIT has compiled the hot path. */
+	private static final int WARMUP_COLUMNS = 20_000;
+
+	/** Chunks timed. Enough to average over both plate interiors and margins. */
+	private static final int BENCH_CHUNKS = 400;
+
+	/**
+	 * Target for one chunk's surface on one thread, in milliseconds.
+	 *
+	 * <p>Vanilla spends a few milliseconds per chunk on terrain shape. A generator
+	 * that wants to keep up with a player flying has to stay in that region once the
+	 * worker pool is accounted for.
+	 */
+	private static final double CHUNK_BUDGET_MS = 5.0;
+
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
 
@@ -102,6 +117,7 @@ public final class SimulatorMain {
 
 		printStatistics(TerrainStatistics.measure(
 				world, continental, MapPanel.SEA_LEVEL, TerrainStatistics.BATCH_GRID));
+		printChunkCost(world);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
@@ -187,6 +203,67 @@ public final class SimulatorMain {
 		if (s.minHeight() < MapPanel.MIN_Y || s.maxHeight() > MapPanel.MAX_Y) {
 			System.out.println();
 			System.out.println("  *** OUT OF BOUNDS: terrain leaves the dimension and will be clipped");
+		}
+	}
+
+	/**
+	 * Times terrain generation at the rate Minecraft will actually ask for it.
+	 *
+	 * <p>Every other measurement here is about whether the world looks right. This one
+	 * is about whether it can exist. A chunk is 256 columns, and the plate lookup
+	 * feeding each one now resolves the plate of up to 25 candidate crust cells, each
+	 * of which is an 81-site weighted nuclei search. That is a large constant on the
+	 * hottest path in the generator, and the simulator's own render times hide it
+	 * because they are spread across every core.
+	 *
+	 * <p>Single-threaded on purpose. Minecraft generates chunks on a worker pool, so
+	 * the number that matters is the cost of one chunk on one thread, not the
+	 * throughput of a machine with twelve.
+	 *
+	 * <p>Sampled away from the origin so it does not accidentally measure only plate
+	 * interior, which is the cheap case: interiors exhaust the candidate search
+	 * without finding a differing plate, margins usually stop early.
+	 */
+	private static void printChunkCost(final TerrainModel.Snapshot world) {
+		double[] origins = {0.0, 120_000.0, -348_600.0, 75_600.0};
+
+		// Warm up first. The first few thousand calls run interpreted, and reporting
+		// those as the cost would overstate it several times over.
+		for (int i = 0; i < WARMUP_COLUMNS; i++) {
+			world.terrain().heightAt(i * 7.0, i * 13.0);
+		}
+
+		long start = System.nanoTime();
+		int columns = 0;
+
+		for (int chunk = 0; chunk < BENCH_CHUNKS; chunk++) {
+			double baseX = origins[chunk % 2 * 2] + (chunk / 2) * 16.0;
+			double baseZ = origins[chunk % 2 * 2 + 1] + (chunk / 2) * 16.0;
+
+			for (int cz = 0; cz < 16; cz++) {
+				for (int cx = 0; cx < 16; cx++) {
+					world.terrain().heightAt(baseX + cx, baseZ + cz);
+					columns++;
+				}
+			}
+		}
+
+		double elapsedMs = (System.nanoTime() - start) / 1_000_000.0;
+		double perChunk = elapsedMs / BENCH_CHUNKS;
+
+		System.out.println();
+		System.out.println("Generation cost, single-threaded:");
+		System.out.printf("  %,d columns over %d chunks in %,.0f ms%n",
+				columns, BENCH_CHUNKS, elapsedMs);
+		System.out.printf("  %.2f ms per chunk surface%n", perChunk);
+		System.out.printf("  %,.0f columns per second%n", columns / (elapsedMs / 1000.0));
+
+		// A rough budget. Vanilla spends a few ms per chunk on terrain shape, and a
+		// generator wanting to keep up with a player flying needs to stay in that
+		// region across the whole worker pool.
+		if (perChunk > CHUNK_BUDGET_MS) {
+			System.out.printf("  *** OVER BUDGET: %.2f ms against a %.0f ms target%n",
+					perChunk, CHUNK_BUDGET_MS);
 		}
 	}
 

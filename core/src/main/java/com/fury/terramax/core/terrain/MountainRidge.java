@@ -78,12 +78,29 @@ public final class MountainRidge {
 	 * with a falloff of exactly zero, contributing nothing to numerator, denominator
 	 * or maximum.
 	 */
-	public double totalOffsetAt(final PlateMap plates, final double worldX, final double worldZ) {
+	/**
+	 * The nearest boundary and the relief there, from one search.
+	 *
+	 * @param nearest boundary nearest this position, for the caller's base blend
+	 * @param relief  height offset in blocks, combined over every boundary in reach
+	 */
+	public record Result(PlateSample nearest, double relief) {
+	}
+
+	/**
+	 * Evaluates relief and reports the nearest boundary, in a single pass.
+	 *
+	 * <p>Both in one call because the search is the expensive part of a terrain
+	 * lookup and asking for them separately ran it twice: {@code plates.sample} and
+	 * {@code forEachBoundary} resolve the same 25 candidate cells through the same
+	 * weighted nuclei search.
+	 */
+	public Result evaluate(final PlateMap plates, final double worldX, final double worldZ) {
 		// A three-element array because a lambda cannot close over mutable locals:
 		// weighted relief, total weight, strongest weight.
 		double[] acc = new double[3];
 
-		plates.forEachBoundary(worldX, worldZ, rangeWidthBlocks, boundary -> {
+		PlateSample nearest = plates.forEachBoundary(worldX, worldZ, rangeWidthBlocks, boundary -> {
 			double falloff = falloff(boundary.boundaryDistance());
 
 			if (falloff <= 0.0) {
@@ -95,11 +112,7 @@ public final class MountainRidge {
 			acc[2] = Math.max(acc[2], falloff);
 		});
 
-		if (acc[1] <= 0.0) {
-			return 0.0;
-		}
-
-		return acc[0] / acc[1] * acc[2];
+		return new Result(nearest, acc[1] <= 0.0 ? 0.0 : acc[0] / acc[1] * acc[2]);
 	}
 
 	/**

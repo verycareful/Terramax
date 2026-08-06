@@ -356,7 +356,7 @@ public final class PlateMap {
 	 *
 	 * @param maxDistance boundaries further than this contribute nothing, so are skipped
 	 */
-	public void forEachBoundary(
+	public PlateSample forEachBoundary(
 			final double worldX, final double worldZ,
 			final double maxDistance, final BoundaryVisitor visitor) {
 		double queryX = warp.warpX(worldX, worldZ);
@@ -369,6 +369,8 @@ public final class PlateMap {
 		long centreX = voronoi.sites().cellX(queryX);
 		long centreZ = voronoi.sites().cellZ(queryZ);
 		int radius = voronoi.searchRadiusCells();
+
+		Neighbour nearest = null;
 
 		for (int dz = -radius; dz <= radius; dz++) {
 			for (int dx = -radius; dx <= radius; dx++) {
@@ -385,14 +387,30 @@ public final class PlateMap {
 					continue;
 				}
 
-				Neighbour across = frameAgainst(
-						queryX, queryZ, cell, cellX, cellZ, candidate);
+				Neighbour across = frameAgainst(queryX, queryZ, cell, cellX, cellZ, candidate);
+
+				// The nearest is tracked without a distance limit, because the caller
+				// needs it for the base blend, which reaches much further than relief
+				// does. Only relief is capped at maxDistance.
+				if (nearest == null || across.boundaryDistance() < nearest.boundaryDistance()) {
+					nearest = across;
+				}
 
 				if (across.boundaryDistance() < maxDistance) {
 					visitor.visit(classify(plate, crust, cell, across));
 				}
 			}
 		}
+
+		if (nearest == null) {
+			return new PlateSample(
+					plate, plate, crust, crust,
+					PlateBoundaryType.NONE,
+					Double.MAX_VALUE, cell.alongBoundary(),
+					0.0, 0.0);
+		}
+
+		return classify(plate, crust, cell, nearest);
 	}
 
 	/** A crust cell across a plate boundary, and the frame of that boundary. */
