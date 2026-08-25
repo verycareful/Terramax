@@ -4,6 +4,8 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 
 import com.fury.terramax.core.climate.TemperatureField;
+import com.fury.terramax.core.climate.Wind;
+import com.fury.terramax.core.climate.WindField;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.region.RegionMap;
@@ -230,7 +232,16 @@ public final class MapRenderer {
 		 * a tropical mountain and an arctic shoreline reach the same zone at wildly
 		 * different altitudes without a single per-range setting.
 		 */
-		LIFE_ZONE
+		LIFE_ZONE,
+
+		/**
+		 * Prevailing wind: hue is direction, brightness is speed.
+		 *
+		 * <p>The circulation bands read as horizontal stripes because the base flow
+		 * depends only on latitude, and terrain deflection shows as distortion in
+		 * them. Dark bands are the three calm belts.
+		 */
+		WIND
 	}
 
 	/** Cold to hot, in degrees C. Diverging about freezing rather than about zero. */
@@ -259,6 +270,19 @@ public final class MapRenderer {
 
 		return rampColour(TEMPERATURE_RAMP,
 				(celsius - TEMPERATURE_MIN) / (TEMPERATURE_MAX - TEMPERATURE_MIN)).getRGB();
+	}
+
+	private static int windColour(
+			final WindField wind, final TemperatureField climate,
+			final double worldX, final double worldZ) {
+		Wind flow = wind.at(worldX, worldZ, climate.latitude(worldZ));
+
+		// Hue from bearing, so opposite winds are opposite colours and a deflection
+		// of a few degrees is visible as a shift rather than needing arrows.
+		float hue = (float) ((flow.bearing() + Math.PI) / (2.0 * Math.PI));
+		float brightness = (float) Math.min(1.0, flow.speed());
+
+		return Color.getHSBColor(hue, 0.75f, brightness).getRGB();
 	}
 
 	private static int lifeZoneColour(
@@ -336,6 +360,7 @@ public final class MapRenderer {
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
 			case TEMPERATURE -> temperatureColour(field, climate, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, climate, worldX, worldZ, seaLevel);
+			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
 		}, listener);
 	}
 

@@ -84,6 +84,13 @@ public final class LegendPanel extends JPanel {
 
 			case REGION_ID -> g.drawString("one hue per region", x, y);
 
+			case WIND -> {
+				g.drawString("hue is direction,", x, y);
+				g.drawString("brightness is speed", x, y + ROW_HEIGHT);
+				g.drawString("dark bands are the", x, y + ROW_HEIGHT * 2);
+				g.drawString("three calm belts", x, y + ROW_HEIGHT * 3);
+			}
+
 			case TEMPERATURE -> {
 				g.drawString("cold blue to hot red", x, y);
 				g.drawString("-45 C to +40 C", x, y + ROW_HEIGHT);

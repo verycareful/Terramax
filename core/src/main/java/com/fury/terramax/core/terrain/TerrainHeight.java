@@ -79,6 +79,32 @@ public final class TerrainHeight implements HeightField {
 		this.seaLevel = plates.settings().seaLevel();
 	}
 
+	/**
+	 * The large-scale component of the surface: crust base, region and boundary
+	 * relief, without erosion detail.
+	 *
+	 * <p><b>This is what wind deflects against, and the choice is load-bearing.</b>
+	 * Wind is shaped by terrain, moisture rides wind, river discharge depends on
+	 * moisture, and terrain will depend on rivers once drainage exists. That is a
+	 * closed loop. It stays solvable only because wind reads *uplift*, which is
+	 * computed before any of the rest, rather than the finished surface. Anyone
+	 * "improving" this to call {@link #heightAt} makes the generator unsolvable.
+	 *
+	 * <p>Physically right as well as convenient: a 30-block hillock should not
+	 * deflect a continental airstream, and finished terrain would make it try.
+	 */
+	public double upliftAt(final double worldX, final double worldZ) {
+		MountainRidge.Result ridged = ridge.evaluate(plates, worldX, worldZ);
+		PlateSample plate = ridged.nearest();
+		RegionSample region = regions.sample(worldX, worldZ, plate.crust().crustType());
+
+		double interiority = smoothstep(plate.boundaryDistance() / blendWidthBlocks);
+
+		return blendedBase(plate, interiority)
+				+ regionRelief(region, interiority, worldX, worldZ)
+				+ ridged.relief();
+	}
+
 	@Override
 	public double heightAt(final double worldX, final double worldZ) {
 		// One pass: the plate search is the expensive part of a lookup, and asking for

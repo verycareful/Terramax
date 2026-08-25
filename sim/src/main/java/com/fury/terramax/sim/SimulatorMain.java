@@ -64,6 +64,9 @@ public final class SimulatorMain {
 	 */
 	private static final double CHUNK_BUDGET_MS = 5.0;
 
+	/** Span showing several climate bands, so latitude is visible at all. */
+	private static final double PLANETARY_SPAN_BLOCKS = 5_000_000.0;
+
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
 
@@ -88,6 +91,11 @@ public final class SimulatorMain {
 		double spacing = model.plateSettings().crustSpacingBlocks();
 		MapView continental = new MapView(0, 0, spacing * CONTINENTAL_SPAN_CELLS, IMAGE_PIXELS);
 		MapView local = new MapView(0, 0, spacing * LOCAL_SPAN_CELLS, IMAGE_PIXELS);
+
+		// Wide enough to hold several climate bands. A continental view spans less
+		// than one, so the latitudinal gradient is invisible at that scale however
+		// correct it is.
+		MapView planetary = new MapView(0, 0, PLANETARY_SPAN_BLOCKS, IMAGE_PIXELS);
 
 		writePlates("plates-continental", continental, world, MapRenderer.Layer.PLATES_WITH_EDGES);
 		writePlates("crust-type-continental", continental, world, MapRenderer.Layer.CRUST_TYPE);
@@ -114,6 +122,12 @@ public final class SimulatorMain {
 		writeTerrain("temperature-continental", continental, world,
 				MapRenderer.TerrainLayer.TEMPERATURE);
 		writeTerrain("life-zone-continental", continental, world,
+				MapRenderer.TerrainLayer.LIFE_ZONE);
+		writeTerrain("wind-continental", continental, world,
+				MapRenderer.TerrainLayer.WIND);
+		writeTerrain("wind-planetary", planetary, world,
+				MapRenderer.TerrainLayer.WIND);
+		writeTerrain("life-zone-planetary", planetary, world,
 				MapRenderer.TerrainLayer.LIFE_ZONE);
 
 		writeRangeDetail(world, spacing);

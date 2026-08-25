@@ -2,6 +2,7 @@ package com.fury.terramax.sim;
 
 import com.fury.terramax.core.climate.ClimateSettings;
 import com.fury.terramax.core.climate.TemperatureField;
+import com.fury.terramax.core.climate.WindField;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.region.RegionMap;
@@ -52,7 +53,8 @@ public final class TerrainModel {
 	 * what world they are describing.
 	 */
 	public record Snapshot(
-			PlateMap plates, RegionMap regions, TerrainHeight terrain, TemperatureField temperature) {
+			PlateMap plates, RegionMap regions, TerrainHeight terrain,
+			TemperatureField temperature, WindField wind) {
 	}
 
 	public Snapshot snapshot() {
@@ -108,9 +110,15 @@ public final class TerrainModel {
 		PlateMap plates = new PlateMap(seed, plateSettings);
 		RegionMap regions = new RegionMap(seed, regionSettings);
 
+		TerrainHeight terrain = new TerrainHeight(seed, plates, regions, terrainSettings);
+
 		this.snapshot = new Snapshot(
-				plates, regions,
-				new TerrainHeight(seed, plates, regions, terrainSettings),
-				new TemperatureField(seed, climateSettings));
+				plates, regions, terrain,
+				new TemperatureField(seed, climateSettings),
+
+				// Wind reads the uplift layer, not the finished surface. That is what
+				// keeps the pipeline acyclic once drainage lands: terrain depends on
+				// rivers, rivers on moisture, moisture on wind, wind on terrain.
+				new WindField(climateSettings, terrain::upliftAt));
 	}
 }
