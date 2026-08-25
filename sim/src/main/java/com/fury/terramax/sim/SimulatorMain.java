@@ -329,6 +329,12 @@ public final class SimulatorMain {
 		writeTerrain("range-elevation", view, world,
 				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC);
 
+		// Wind at range scale is the only view where deflection is legible. The whole
+		// view sits inside one climate band, so the base flow is near-constant and
+		// every variation on screen is terrain bending the air.
+		writeTerrain("range-wind", view, world, MapRenderer.TerrainLayer.WIND);
+		writeTerrain("range-life-zone", view, world, MapRenderer.TerrainLayer.LIFE_ZONE);
+
 		double reach = spacing * RANGE_SPAN_CELLS * 0.5;
 		var section = CrossSectionPlotter.plot(
 				world.terrain(),
