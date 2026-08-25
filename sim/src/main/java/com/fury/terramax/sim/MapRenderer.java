@@ -3,6 +3,9 @@ package com.fury.terramax.sim;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 
+import com.fury.terramax.core.climate.Moisture;
+import com.fury.terramax.core.climate.MoistureField;
+import com.fury.terramax.core.climate.SurfaceClimate;
 import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.Wind;
 import com.fury.terramax.core.climate.WindField;
@@ -241,7 +244,34 @@ public final class MapRenderer {
 		 * depends only on latitude, and terrain deflection shows as distortion in
 		 * them. Dark bands are the three calm belts.
 		 */
-		WIND
+		WIND,
+
+		/**
+		 * Rain falling here, dry sand through green to deep blue.
+		 *
+		 * <p>The layer that proves the model. Nothing in it is authored: the wet
+		 * windward face, the dry lee, the parched continental interior and the
+		 * equatorial belt are all one air parcel losing what it cannot hold.
+		 */
+		PRECIPITATION,
+
+		/**
+		 * Vapour as a fraction of what this air could hold.
+		 *
+		 * <p>Read beside {@link #PRECIPITATION} rather than instead of it. Where this
+		 * is high and that is low is a coastal desert: saturated air with nothing to
+		 * lift it. A single moisture scalar cannot show that place exists.
+		 */
+		HUMIDITY,
+
+		/**
+		 * How much warmer the arriving air is than its latitude and altitude imply.
+		 *
+		 * <p>Red on the lee of a range is a foehn, and it is not coded anywhere. It
+		 * is what is left over after air cooled slowly on the way up, because it was
+		 * raining, and warmed quickly on the way down, because it had nothing left.
+		 */
+		FOEHN_WARMING
 	}
 
 	/** Cold to hot, in degrees C. Diverging about freezing rather than about zero. */
@@ -264,12 +294,81 @@ public final class MapRenderer {
 	private static final Color ZONE_SNOW = new Color(244, 246, 250);
 
 	private static int temperatureColour(
-			final HeightField field, final TemperatureField climate,
+			final HeightField field, final SurfaceClimate climate,
 			final double worldX, final double worldZ) {
 		double celsius = climate.at(worldX, worldZ, field.heightAt(worldX, worldZ));
 
 		return rampColour(TEMPERATURE_RAMP,
 				(celsius - TEMPERATURE_MIN) / (TEMPERATURE_MAX - TEMPERATURE_MIN)).getRGB();
+	}
+
+	/** Parched through temperate to soaking. Ends violet so the extremes separate. */
+	private static final Color[] PRECIPITATION_RAMP = {
+		new Color(196, 172, 128),
+		new Color(206, 200, 140),
+		new Color(150, 190, 110),
+		new Color(70, 160, 110),
+		new Color(40, 120, 160),
+		new Color(40, 60, 150),
+		new Color(90, 40, 130)
+	};
+
+	/**
+	 * Rain rate at the top of the ramp, per 1,000 blocks of path.
+	 *
+	 * <p>The ramp is applied to the square root of the rate rather than the rate
+	 * itself. Precipitation is roughly exponential in what the air is carrying, so a
+	 * linear ramp puts every desert, steppe and dry forest in the first two percent
+	 * of the scale and spends the rest resolving the difference between two kinds of
+	 * rainforest. The boundary worth seeing is the dry one.
+	 *
+	 * <p>The value is read off the climate transect rather than chosen: it is roughly
+	 * the wettest windward slope in the tropics, so the ramp spends its whole length
+	 * on rates that occur.
+	 */
+	private static final double PRECIPITATION_MAX = 0.06;
+
+	/** Bone dry through to saturated. */
+	private static final Color[] HUMIDITY_RAMP = {
+		new Color(140, 100, 60),
+		new Color(196, 168, 110),
+		new Color(210, 210, 180),
+		new Color(130, 190, 190),
+		new Color(50, 150, 190)
+	};
+
+	/** Cooler than ambient, through neutral, to foehn-warmed. */
+	private static final Color[] FOEHN_RAMP = {
+		new Color(60, 90, 180),
+		new Color(150, 175, 220),
+		new Color(240, 240, 240),
+		new Color(230, 160, 110),
+		new Color(190, 50, 40)
+	};
+
+	/** Departure from ambient, in degrees C, at each end of the foehn ramp. */
+	private static final double FOEHN_RANGE_CELSIUS = 8.0;
+
+	private static int precipitationColour(
+			final MoistureField moisture, final double worldX, final double worldZ) {
+		Moisture air = moisture.at(worldX, worldZ);
+		double rate = Math.max(0.0, air.precipitation());
+
+		return rampColour(PRECIPITATION_RAMP,
+				Math.sqrt(rate / PRECIPITATION_MAX)).getRGB();
+	}
+
+	private static int humidityColour(
+			final MoistureField moisture, final double worldX, final double worldZ) {
+		return rampColour(HUMIDITY_RAMP, moisture.at(worldX, worldZ).humidity()).getRGB();
+	}
+
+	private static int foehnColour(
+			final MoistureField moisture, final double worldX, final double worldZ) {
+		double warming = moisture.at(worldX, worldZ).foehnWarming();
+
+		return rampColour(FOEHN_RAMP,
+				0.5 + 0.5 * warming / FOEHN_RANGE_CELSIUS).getRGB();
 	}
 
 	private static int windColour(
@@ -286,7 +385,7 @@ public final class MapRenderer {
 	}
 
 	private static int lifeZoneColour(
-			final HeightField field, final TemperatureField climate,
+			final HeightField field, final SurfaceClimate climate,
 			final double worldX, final double worldZ, final int seaLevel) {
 		double height = field.heightAt(worldX, worldZ);
 
@@ -349,6 +448,14 @@ public final class MapRenderer {
 		RegionMap regions = world.regions();
 		TemperatureField climate = world.temperature();
 
+		// Solved no finer than the screen can show. A planetary view would otherwise
+		// put every pixel on its own trajectory and take hours.
+		MoistureField moisture = world.moisture().forResolution(view.blocksPerPixel());
+
+		// Temperature and life zone read the coupled field, not the bare one, so the
+		// snowline sits higher on a sheltered lee than on the windward face opposite.
+		SurfaceClimate surface = world.moisture().surfaceFor(view.blocksPerPixel());
+
 		return TileRenderer.render(view, (worldX, worldZ) -> switch (layer) {
 			case ELEVATION_MAGMA ->
 					magmaColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
@@ -358,9 +465,12 @@ public final class MapRenderer {
 					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
-			case TEMPERATURE -> temperatureColour(field, climate, worldX, worldZ);
-			case LIFE_ZONE -> lifeZoneColour(field, climate, worldX, worldZ, seaLevel);
+			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
+			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
+			case PRECIPITATION -> precipitationColour(moisture, worldX, worldZ);
+			case HUMIDITY -> humidityColour(moisture, worldX, worldZ);
+			case FOEHN_WARMING -> foehnColour(moisture, worldX, worldZ);
 		}, listener);
 	}
 

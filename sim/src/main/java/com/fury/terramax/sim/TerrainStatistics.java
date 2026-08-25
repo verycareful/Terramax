@@ -32,7 +32,11 @@ public record TerrainStatistics(
 		double minHeight,
 		double maxHeight,
 		double meanHeight,
-		int aboveSea) {
+		int aboveSea,
+		double minPrecipitation,
+		double meanPrecipitation,
+		double maxPrecipitation,
+		double meanHumidity) {
 
 	/**
 	 * Grid for the live panel. 16,384 evaluations, negligible beside a render.
@@ -44,6 +48,16 @@ public record TerrainStatistics(
 
 	/** Grid for the batch run, which can afford 160,000 evaluations and wants accuracy. */
 	public static final int BATCH_GRID = 400;
+
+	/**
+	 * Grid for the moisture rows, deliberately far coarser than the rest.
+	 *
+	 * <p>A moisture sample is a forty-step trajectory, four orders of magnitude
+	 * dearer than a height lookup, so it cannot share the main grid. It does not need
+	 * to: moisture varies over tens of thousands of blocks, and a thousand samples
+	 * pin its range across any view well enough to tune a colour ramp against.
+	 */
+	public static final int MOISTURE_GRID = 32;
 
 	/** Folds a plate's two cell coordinates into one map key. Odd, so pairs cannot cancel. */
 	private static final long PLATE_KEY_MIX = 0x9E3779B97F4A7C15L;
@@ -105,11 +119,39 @@ public record TerrainStatistics(
 
 		int total = grid * grid;
 
+		// Solved at the moisture grid's own spacing rather than the canonical 512, for
+		// the same reason the renderer does: a wide view would otherwise put every
+		// sample on its own trajectory.
+		double moistureStep = view.spanBlocks() / MOISTURE_GRID;
+		var moisture = world.moisture().forResolution(moistureStep);
+
+		double minRain = Double.MAX_VALUE;
+		double maxRain = -Double.MAX_VALUE;
+		double rainSum = 0.0;
+		double humiditySum = 0.0;
+
+		for (int iz = 0; iz < MOISTURE_GRID; iz++) {
+			for (int ix = 0; ix < MOISTURE_GRID; ix++) {
+				var air = moisture.at(
+						view.centreX() + origin + ix * moistureStep,
+						view.centreZ() + origin + iz * moistureStep);
+
+				minRain = Math.min(minRain, air.precipitation());
+				maxRain = Math.max(maxRain, air.precipitation());
+				rainSum += air.precipitation();
+				humiditySum += air.humidity();
+			}
+		}
+
+		int moistureSamples = MOISTURE_GRID * MOISTURE_GRID;
+
 		return new TerrainStatistics(
 				total, step, crust, boundaries, regions,
 				widths.length,
 				widths[0], widths[widths.length / 2], widths[widths.length - 1],
-				min, max, sum / total, aboveSea);
+				min, max, sum / total, aboveSea,
+				minRain, rainSum / moistureSamples, maxRain,
+				humiditySum / moistureSamples);
 	}
 
 	/** Share of sampled area that is plate interior rather than near a boundary. */

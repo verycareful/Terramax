@@ -1,6 +1,7 @@
 package com.fury.terramax.sim;
 
 import com.fury.terramax.core.climate.ClimateSettings;
+import com.fury.terramax.core.climate.MoistureSettings;
 import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.WindField;
 import com.fury.terramax.core.plate.PlateMap;
@@ -32,6 +33,7 @@ public final class TerrainModel {
 	private RegionSettings regionSettings;
 	private TerrainSettings terrainSettings;
 	private ClimateSettings climateSettings;
+	private MoistureSettings moistureSettings;
 
 	private Snapshot snapshot;
 
@@ -41,6 +43,7 @@ public final class TerrainModel {
 		this.regionSettings = RegionSettings.defaults();
 		this.terrainSettings = TerrainSettings.defaults();
 		this.climateSettings = ClimateSettings.defaults();
+		this.moistureSettings = MoistureSettings.defaults();
 
 		rebuild();
 	}
@@ -54,7 +57,7 @@ public final class TerrainModel {
 	 */
 	public record Snapshot(
 			PlateMap plates, RegionMap regions, TerrainHeight terrain,
-			TemperatureField temperature, WindField wind) {
+			TemperatureField temperature, WindField wind, MoistureScale moisture) {
 	}
 
 	public Snapshot snapshot() {
@@ -106,19 +109,32 @@ public final class TerrainModel {
 		rebuild();
 	}
 
+	public MoistureSettings moistureSettings() {
+		return moistureSettings;
+	}
+
+	public void setMoistureSettings(final MoistureSettings settings) {
+		this.moistureSettings = settings;
+		rebuild();
+	}
+
 	private void rebuild() {
 		PlateMap plates = new PlateMap(seed, plateSettings);
 		RegionMap regions = new RegionMap(seed, regionSettings);
 
 		TerrainHeight terrain = new TerrainHeight(seed, plates, regions, terrainSettings);
 
-		this.snapshot = new Snapshot(
-				plates, regions, terrain,
-				new TemperatureField(seed, climateSettings),
+		TemperatureField temperature = new TemperatureField(seed, climateSettings);
 
-				// Wind reads the uplift layer, not the finished surface. That is what
-				// keeps the pipeline acyclic once drainage lands: terrain depends on
-				// rivers, rivers on moisture, moisture on wind, wind on terrain.
-				new WindField(climateSettings, terrain::upliftAt));
+		// Wind reads the uplift layer, not the finished surface. That is what keeps
+		// the pipeline acyclic once drainage lands: terrain depends on rivers, rivers
+		// on moisture, moisture on wind, wind on terrain.
+		WindField wind = new WindField(climateSettings, terrain::upliftAt);
+
+		this.snapshot = new Snapshot(
+				plates, regions, terrain, temperature, wind,
+				new MoistureScale(
+						climateSettings, moistureSettings, temperature, wind,
+						terrain::upliftAt, plateSettings.seaLevel()));
 	}
 }

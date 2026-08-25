@@ -106,6 +106,12 @@ public final class StatisticsPanel extends JPanel {
 		out.append(String.format("uses       %.0f%% of dim<br>",
 				s.dimensionUsage(MapPanel.MIN_Y, MapPanel.MAX_Y) * 100));
 
+		out.append("<br><b>MOISTURE</b><br>");
+		out.append(String.format("rain       %.3f<br>", s.minPrecipitation()));
+		out.append(String.format("        to %.3f<br>", s.maxPrecipitation()));
+		out.append(String.format("mean       %.3f<br>", s.meanPrecipitation()));
+		out.append(String.format("humidity   %.0f%%<br>", s.meanHumidity() * 100));
+
 		// Flag the two hard failures rather than leaving them to be spotted in a
 		// number. Terrain outside the dimension is clipped in game, silently.
 		if (s.minHeight() < MapPanel.MIN_Y || s.maxHeight() > MapPanel.MAX_Y) {

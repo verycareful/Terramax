@@ -58,12 +58,21 @@ public final class StatusBar extends JPanel {
 		var region = world.regions().sample(worldX, worldZ, plate.crust().crustType()).region();
 		double height = world.terrain().heightAt(worldX, worldZ);
 
-		double celsius = world.temperature().at(worldX, worldZ, height);
+		// The canonical lattice, not the render's coarsened one, so the readout is
+		// the number the game would produce rather than the number the picture shows.
+		var surface = world.moisture().surfaceClimate();
+		var air = surface.moisture().at(worldX, worldZ);
+
+		double celsius = surface.at(worldX, worldZ, height);
+		double anomaly = surface.airAnomaly(worldX, worldZ);
 
 		cursor.setText(String.format(
-				"x %,.0f   z %,.0f   y %,.0f   %.1f C   lat %.2f   %s   %s   plate %d,%d",
+				"x %,.0f   z %,.0f   y %,.0f   %.1f C%s   lat %.2f   rain %.2f   rh %.0f%%"
+						+ "   %s   %s   plate %d,%d",
 				worldX, worldZ, height, celsius,
+				Math.abs(anomaly) < 0.5 ? "" : String.format(" (%+.1f foehn)", anomaly),
 				world.temperature().latitude(worldZ),
+				air.precipitation(), air.humidity() * 100,
 				plate.crust().crustType().name().toLowerCase(),
 				region.type().name().toLowerCase().replace('_', ' '),
 				plate.plate().cellX(), plate.plate().cellZ()));

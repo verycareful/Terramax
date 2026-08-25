@@ -67,6 +67,21 @@ public final class SimulatorMain {
 	/** Span showing several climate bands, so latitude is visible at all. */
 	private static final double PLANETARY_SPAN_BLOCKS = 5_000_000.0;
 
+	/** World X the climate transect walks up. */
+	private static final double TRANSECT_X = 0.0;
+
+	/** How far north the climate transect walks, covering one full pole to equator. */
+	private static final double TRANSECT_SPAN_BLOCKS = 1_200_000.0;
+
+	/** Samples along the climate transect. */
+	private static final int TRANSECT_STEPS = 60;
+
+	/** Moisture nodes solved to warm the JIT before the trajectory is timed. */
+	private static final int MOISTURE_WARMUP_NODES = 200;
+
+	/** Moisture nodes timed. Each is a full trajectory, so this need not be large. */
+	private static final int MOISTURE_BENCH_NODES = 200;
+
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
 
@@ -78,6 +93,11 @@ public final class SimulatorMain {
 	public static void main(final String[] args) throws IOException {
 		if (args.length > 0 && args[0].equals("--viewer")) {
 			ViewerFrame.launch(SEED);
+			return;
+		}
+
+		if (args.length > 0 && args[0].equals("--climate-transect")) {
+			printClimateTransect(new TerrainModel(SEED).snapshot());
 			return;
 		}
 
@@ -130,12 +150,26 @@ public final class SimulatorMain {
 		writeTerrain("life-zone-planetary", planetary, world,
 				MapRenderer.TerrainLayer.LIFE_ZONE);
 
+		writeTerrain("precipitation-continental", continental, world,
+				MapRenderer.TerrainLayer.PRECIPITATION);
+		writeTerrain("precipitation-local", local, world,
+				MapRenderer.TerrainLayer.PRECIPITATION);
+		writeTerrain("humidity-continental", continental, world,
+				MapRenderer.TerrainLayer.HUMIDITY);
+		writeTerrain("humidity-local", local, world,
+				MapRenderer.TerrainLayer.HUMIDITY);
+		writeTerrain("foehn-continental", continental, world,
+				MapRenderer.TerrainLayer.FOEHN_WARMING);
+		writeTerrain("precipitation-planetary", planetary, world,
+				MapRenderer.TerrainLayer.PRECIPITATION);
+
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
 
 		printStatistics(TerrainStatistics.measure(
 				world, continental, MapPanel.SEA_LEVEL, TerrainStatistics.BATCH_GRID));
 		printChunkCost(world);
+		printMoistureCost(world);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
@@ -218,6 +252,13 @@ public final class SimulatorMain {
 				MapPanel.MIN_Y, MapPanel.MAX_Y,
 				s.dimensionUsage(MapPanel.MIN_Y, MapPanel.MAX_Y) * 100.0);
 
+		System.out.println();
+		System.out.printf("Moisture, over %d samples:%n",
+				TerrainStatistics.MOISTURE_GRID * TerrainStatistics.MOISTURE_GRID);
+		System.out.printf("  rain            %.3f to %.3f, mean %.3f%n",
+				s.minPrecipitation(), s.maxPrecipitation(), s.meanPrecipitation());
+		System.out.printf("  humidity        %5.1f%%%n", s.meanHumidity() * 100.0);
+
 		if (s.minHeight() < MapPanel.MIN_Y || s.maxHeight() > MapPanel.MAX_Y) {
 			System.out.println();
 			System.out.println("  *** OUT OF BOUNDS: terrain leaves the dimension and will be clipped");
@@ -296,6 +337,84 @@ public final class SimulatorMain {
 	 * whether the ridges have valleys between them or are merely shaded to look as
 	 * though they do.
 	 */
+	/**
+	 * Times one moisture trajectory, the dearest thing in the generator.
+	 *
+	 * <p>Reported per node and per chunk, because those are wildly different numbers
+	 * and only the second one decides whether this ships. A node is expensive; the
+	 * lattice means a chunk pays a thousandth of one.
+	 */
+	/**
+	 * Walks north from the equator printing the climate at each step.
+	 *
+	 * <p>Exists because a colour ramp cannot answer "is that edge real". A band
+	 * boundary that looks like a hard step on the map is either a discontinuity in
+	 * the model or a discontinuity in the palette, and only numbers separate the two.
+	 */
+	private static void printClimateTransect(final TerrainModel.Snapshot world) {
+		var moisture = world.moisture().canonical();
+		double step = world.temperature().latitude(0.0) >= 0.0
+				? TRANSECT_SPAN_BLOCKS / TRANSECT_STEPS
+				: 0.0;
+
+		System.out.printf("%12s %6s %8s %8s %8s %8s %8s %8s%n",
+				"z", "lat", "wind", "conv", "y", "rain", "rh", "foehn");
+
+		for (int i = 0; i <= TRANSECT_STEPS; i++) {
+			double worldZ = i * step;
+			double latitude = world.temperature().latitude(worldZ);
+			var flow = world.wind().at(TRANSECT_X, worldZ, latitude);
+			var air = moisture.solve(TRANSECT_X, worldZ);
+
+			double separation = 12_000.0;
+			double convergence = -(world.wind().baseFlow(
+							worldZ + separation, world.temperature().latitude(worldZ + separation))
+									.southward()
+					- world.wind().baseFlow(
+							worldZ - separation, world.temperature().latitude(worldZ - separation))
+									.southward()) / (2.0 * separation);
+
+			System.out.printf("%,12.0f %6.3f %8.3f %8.2e %8.0f %8.4f %7.0f%% %8.2f%n",
+					worldZ, latitude, flow.speed(), convergence,
+					world.terrain().heightAt(TRANSECT_X, worldZ),
+					air.precipitation(), air.humidity() * 100.0, air.foehnWarming());
+		}
+	}
+
+	private static void printMoistureCost(final TerrainModel.Snapshot world) {
+		var moisture = world.moisture().canonical();
+		double spacing = moisture.settings().latticeSpacingBlocks();
+
+		// Off in a corner nothing else has touched, so the cache is cold and the
+		// measurement is of the trace rather than of a hash lookup.
+		double origin = 3_000_000.0;
+
+		for (int i = 0; i < MOISTURE_WARMUP_NODES; i++) {
+			moisture.solve(origin + i * spacing, origin);
+		}
+
+		long start = System.nanoTime();
+
+		for (int i = 0; i < MOISTURE_BENCH_NODES; i++) {
+			moisture.solve(origin - i * spacing, origin + spacing);
+		}
+
+		double perNodeMs = (System.nanoTime() - start) / 1e6 / MOISTURE_BENCH_NODES;
+
+		// A 16 by 16 chunk against a lattice cell, times the four nodes a bilinear
+		// read touches. Nodes are shared with neighbouring chunks, so this is an
+		// upper bound rather than an average.
+		double nodesPerChunk = 4.0 * (16.0 * 16.0) / (spacing * spacing);
+
+		System.out.println();
+		System.out.println("MOISTURE COST");
+		System.out.printf("  fetch traced                 %,10.0f blocks upwind%n",
+				moisture.settings().fetchBlocks());
+		System.out.printf("  one node                     %10.2f ms%n", perNodeMs);
+		System.out.printf("  amortised per chunk          %10.4f ms%n",
+				perNodeMs * nodesPerChunk);
+	}
+
 	private static void writeRangeDetail(
 			final TerrainModel.Snapshot world, final double spacing) throws IOException {
 		double span = spacing * CONTINENTAL_SPAN_CELLS;
@@ -334,6 +453,12 @@ public final class SimulatorMain {
 		// every variation on screen is terrain bending the air.
 		writeTerrain("range-wind", view, world, MapRenderer.TerrainLayer.WIND);
 		writeTerrain("range-life-zone", view, world, MapRenderer.TerrainLayer.LIFE_ZONE);
+
+		// Rain shadow is only visible where one range fills the frame. At continental
+		// scale a range is four pixels wide and its lee is one.
+		writeTerrain("range-precipitation", view, world,
+				MapRenderer.TerrainLayer.PRECIPITATION);
+		writeTerrain("range-foehn", view, world, MapRenderer.TerrainLayer.FOEHN_WARMING);
 
 		double reach = spacing * RANGE_SPAN_CELLS * 0.5;
 		var section = CrossSectionPlotter.plot(

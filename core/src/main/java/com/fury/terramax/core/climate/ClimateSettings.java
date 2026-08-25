@@ -9,6 +9,8 @@ package com.fury.terramax.core.climate;
  * @param lapseRatePerBlock  temperature lost per block of altitude, in degrees C
  * @param seasonalNoiseScale strength of the local departure from the zonal average
  * @param noiseWavelength    wavelength of that departure, in blocks
+ * @param foehnFraction      how much of the modelled air-temperature anomaly reaches
+ *                           the ground, in [0, 1]
  */
 public record ClimateSettings(
 		double bandHeightBlocks,
@@ -16,7 +18,8 @@ public record ClimateSettings(
 		double poleTemperature,
 		double lapseRatePerBlock,
 		double seasonalNoiseScale,
-		double noiseWavelength) {
+		double noiseWavelength,
+		double foehnFraction) {
 
 	/**
 	 * Defaults for a world whose vertical scale is compressed relative to Earth.
@@ -36,8 +39,14 @@ public record ClimateSettings(
 	 *
 	 * <p>30°C at the equator and -25°C at the pole are Earth's rough annual means at
 	 * sea level, and there is no reason to invent different ones.
+	 *
+	 * <p><b>Half the foehn anomaly reaches the ground.</b> The trajectory model
+	 * produces departures past 10°C on a steep lee, which is the upper end of what a
+	 * real foehn does and rests on tuned rather than measured quantities. Half keeps
+	 * lee slopes visibly warmer, and their treelines visibly higher, without letting
+	 * one modelled term take over the life-zone map. See {@link SurfaceClimate}.
 	 */
 	public static ClimateSettings defaults() {
-		return new ClimateSettings(1_200_000.0, 30.0, -25.0, 0.022, 6.0, 220_000.0);
+		return new ClimateSettings(1_200_000.0, 30.0, -25.0, 0.022, 6.0, 220_000.0, 0.5);
 	}
 }

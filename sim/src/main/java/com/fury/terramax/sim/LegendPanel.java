@@ -96,6 +96,27 @@ public final class LegendPanel extends JPanel {
 				g.drawString("-45 C to +40 C", x, y + ROW_HEIGHT);
 			}
 
+			case PRECIPITATION -> {
+				g.drawString("sand: no rain", x, y);
+				g.drawString("green to blue: wetter", x, y + ROW_HEIGHT);
+				g.drawString("square root scale, so", x, y + ROW_HEIGHT * 2);
+				g.drawString("the dry end is legible", x, y + ROW_HEIGHT * 3);
+			}
+
+			case HUMIDITY -> {
+				g.drawString("vapour over saturation", x, y);
+				g.drawString("brown dry, blue saturated", x, y + ROW_HEIGHT);
+				g.drawString("humid and rainless at", x, y + ROW_HEIGHT * 2);
+				g.drawString("once is a coastal desert", x, y + ROW_HEIGHT * 3);
+			}
+
+			case FOEHN_WARMING -> {
+				g.drawString("air minus ambient, +-8 C", x, y);
+				g.drawString("red: warmed by descent", x, y + ROW_HEIGHT);
+				g.drawString("blue: still cool from", x, y + ROW_HEIGHT * 2);
+				g.drawString("a climb it has not lost", x, y + ROW_HEIGHT * 3);
+			}
+
 			case LIFE_ZONE -> {
 				String[] zones = {"forest, above 6 C", "alpine, 6 C to -4 C",
 					"permanent snow, below -4 C", "ocean"};
