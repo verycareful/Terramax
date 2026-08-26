@@ -9,6 +9,7 @@ import com.fury.terramax.core.climate.SurfaceClimate;
 import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.Wind;
 import com.fury.terramax.core.climate.WindField;
+import com.fury.terramax.core.fluvial.BasinIndex;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.region.RegionMap;
@@ -223,6 +224,20 @@ public final class MapRenderer {
 
 		/** A stable colour per region, to check region size and shape. */
 		REGION_ID,
+
+		/**
+		 * A stable colour per drainage basin, hashed from its outlet.
+		 *
+		 * <p><b>The layer that exposes a seam instantly.</b> Basins are keyed by the
+		 * outlet they drain to rather than by the tile that resolved them, precisely so
+		 * that two tiles containing the same straddling basin agree. If that ever broke,
+		 * this render would show a colour change running dead straight along a tile
+		 * boundary, through terrain that contains no straight lines at all.
+		 *
+		 * <p>Correct output has basin edges that wander along ridges, since a basin
+		 * boundary is a drainage divide.
+		 */
+		BASIN_ID,
 
 		/** Temperature in degrees C, cold blue through white to hot red. */
 		TEMPERATURE,
@@ -465,6 +480,7 @@ public final class MapRenderer {
 					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
+			case BASIN_ID -> basinIdColour(world.basins(), field, worldX, worldZ, seaLevel);
 			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
@@ -481,6 +497,27 @@ public final class MapRenderer {
 		var region = regions.sample(worldX, worldZ, crust).region();
 
 		return REGION_TYPE_COLOURS[region.type().ordinal()].getRGB();
+	}
+
+	/**
+	 * Basin colour, or flat blue at sea.
+	 *
+	 * <p>Ocean is excluded rather than coloured, because every ocean point drains to
+	 * itself and colouring them would fill the render with per-pixel confetti that
+	 * hides the thing being looked at.
+	 */
+	private static int basinIdColour(
+			final BasinIndex basins, final HeightField field,
+			final double worldX, final double worldZ, final int seaLevel) {
+		if (field.heightAt(worldX, worldZ) <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		long outlet = basins.outletAt(worldX, worldZ);
+		long id = Hashing.hash(0L, BasinIndex.unpackCellX(outlet), BasinIndex.unpackCellZ(outlet));
+		float hue = ((id >>> 40) & 0xFFFF) / (float) 0x10000;
+
+		return Color.getHSBColor(hue, PLATE_SATURATION, PLATE_BRIGHTNESS).getRGB();
 	}
 
 	private static int regionIdColour(

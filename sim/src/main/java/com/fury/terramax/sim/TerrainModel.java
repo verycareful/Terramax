@@ -4,6 +4,8 @@ import com.fury.terramax.core.climate.ClimateSettings;
 import com.fury.terramax.core.climate.MoistureSettings;
 import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.WindField;
+import com.fury.terramax.core.fluvial.BasinIndex;
+import com.fury.terramax.core.fluvial.DrainageSettings;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.region.RegionClimate;
@@ -50,6 +52,7 @@ public final class TerrainModel {
 	private TerrainSettings terrainSettings;
 	private ClimateSettings climateSettings;
 	private MoistureSettings moistureSettings;
+	private DrainageSettings drainageSettings;
 
 	private Snapshot snapshot;
 
@@ -60,6 +63,7 @@ public final class TerrainModel {
 		this.terrainSettings = TerrainSettings.defaults();
 		this.climateSettings = ClimateSettings.defaults();
 		this.moistureSettings = MoistureSettings.defaults();
+		this.drainageSettings = DrainageSettings.defaults();
 
 		rebuild();
 	}
@@ -73,7 +77,8 @@ public final class TerrainModel {
 	 */
 	public record Snapshot(
 			PlateMap plates, RegionMap regions, TerrainHeight terrain,
-			TemperatureField temperature, WindField wind, MoistureScale moisture) {
+			TemperatureField temperature, WindField wind, MoistureScale moisture,
+			UpliftHeight uplift, BasinIndex basins) {
 	}
 
 	public Snapshot snapshot() {
@@ -166,9 +171,18 @@ public final class TerrainModel {
 		// its own field rather than something TerrainHeight computes privately.
 		UpliftHeight uplift = new UpliftHeight(seed, tectonic, regions, terrainSettings);
 
+		// Tier 1 of drainage: a canonical basin for every point, keyed by the outlet
+		// it drains to rather than by the tile that resolved it.
+		//
+		// Routes tectonics rather than the full uplift surface. At 8,000 blocks it
+		// cannot represent region relief anyway, measurement showed the basins come
+		// out the same either way, and reading uplift here would drag in the whole
+		// moisture field at province scale. Tier 2 routes uplift, where it counts.
+		BasinIndex basins = new BasinIndex(tectonic, drainageSettings);
+
 		this.snapshot = new Snapshot(
 				plates, regions,
 				new TerrainHeight(seed, uplift, terrainSettings),
-				temperature, wind, moisture);
+				temperature, wind, moisture, uplift, basins);
 	}
 }

@@ -1,12 +1,19 @@
 package com.fury.terramax.sim;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import javax.imageio.ImageIO;
 
+import com.fury.terramax.core.fluvial.BasinIndex;
+import com.fury.terramax.core.fluvial.DrainageSettings;
+import com.fury.terramax.core.fluvial.FlowLattice;
 import com.fury.terramax.core.plate.CrustType;
+import com.fury.terramax.core.terrain.HeightField;
+import com.fury.terramax.core.terrain.UpliftHeight;
 import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.region.RegionType;
 
@@ -85,6 +92,15 @@ public final class SimulatorMain {
 	private static final int CROSS_SECTION_WIDTH = 1600;
 	private static final int CROSS_SECTION_HEIGHT = 520;
 
+	/**
+	 * Samples per side when measuring basins.
+	 *
+	 * <p>Coarser than the terrain grid on purpose. A basin is tens of thousands of
+	 * blocks across, so 200 samples over a continental view resolves them comfortably,
+	 * and each sample costs a province tile lookup rather than a noise call.
+	 */
+	private static final int BASIN_SAMPLE_GRID = 200;
+
 	private static final Path OUTPUT_DIR = Path.of("build", "renders");
 
 	private SimulatorMain() {
@@ -98,6 +114,11 @@ public final class SimulatorMain {
 
 		if (args.length > 0 && args[0].equals("--climate-transect")) {
 			printClimateTransect(new TerrainModel(SEED).snapshot());
+			return;
+		}
+
+		if (args.length > 0 && args[0].equals("--drainage-probe")) {
+			printDrainageProbe(new TerrainModel(SEED).snapshot());
 			return;
 		}
 
@@ -164,6 +185,10 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.FOEHN_WARMING);
 		writeTerrain("precipitation-planetary", planetary, world,
 				MapRenderer.TerrainLayer.PRECIPITATION);
+		writeTerrain("basins-continental", continental, world,
+				MapRenderer.TerrainLayer.BASIN_ID);
+		writeTerrain("basins-planetary", planetary, world,
+				MapRenderer.TerrainLayer.BASIN_ID);
 
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
@@ -172,6 +197,7 @@ public final class SimulatorMain {
 				world, continental, MapPanel.SEA_LEVEL, TerrainStatistics.BATCH_GRID));
 		printChunkCost(world);
 		printMoistureCost(world);
+		printBasinStatistics(world, continental);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
@@ -503,6 +529,245 @@ public final class SimulatorMain {
 			final String name, final MapView view,
 			final TerrainModel.Snapshot world, final MapRenderer.Layer layer) throws IOException {
 		write(name, view, MapRenderer.render(world.plates(), view, layer));
+	}
+
+	/**
+	 * Basin count and, more importantly, the largest basin found.
+	 *
+	 * <p><b>The largest figure is the margin assumption under measurement.</b> Basins
+	 * are keyed by outlet so that two province tiles containing the same straddling
+	 * basin agree by construction, and that holds only while the 256,000-block margin
+	 * exceeds the largest basin. A figure approaching the margin means the bound is not
+	 * safe on this seed and the design has to widen it.
+	 */
+	private static void printBasinStatistics(
+			final TerrainModel.Snapshot world, final MapView view) {
+		BasinIndex basins = world.basins();
+		HeightField terrain = world.terrain();
+
+		Map<Long, double[]> extents = new HashMap<>();
+		int land = 0;
+
+		double step = view.spanBlocks() / BASIN_SAMPLE_GRID;
+		double minX = view.centreX() - view.spanBlocks() * 0.5;
+		double minZ = view.centreZ() - view.spanBlocks() * 0.5;
+
+		for (int iz = 0; iz < BASIN_SAMPLE_GRID; iz++) {
+			for (int ix = 0; ix < BASIN_SAMPLE_GRID; ix++) {
+				double worldX = minX + (ix + 0.5) * step;
+				double worldZ = minZ + (iz + 0.5) * step;
+
+				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+					continue;
+				}
+
+				land++;
+
+				// minX, minZ, maxX, maxZ, count
+				double[] box = extents.computeIfAbsent(
+						basins.outletAt(worldX, worldZ),
+						key -> new double[] {worldX, worldZ, worldX, worldZ, 0.0});
+
+				box[0] = Math.min(box[0], worldX);
+				box[1] = Math.min(box[1], worldZ);
+				box[2] = Math.max(box[2], worldX);
+				box[3] = Math.max(box[3], worldZ);
+				box[4]++;
+			}
+		}
+
+		double largest = 0.0;
+		double largestArea = 0.0;
+
+		for (double[] box : extents.values()) {
+			largest = Math.max(largest, Math.max(box[2] - box[0], box[3] - box[1]));
+			largestArea = Math.max(largestArea, box[4]);
+		}
+
+		double marginBlocks = DrainageSettings.defaults().provinceMarginBlocks();
+
+		System.out.println();
+		System.out.println("BASINS, over " + land + " land samples");
+		System.out.printf("  distinct basins        %,d%n", extents.size());
+		System.out.printf("  largest span         %,.0f blocks   [needs %,.0f margin, has %,.0f]%n",
+				largest, largest * 1.5, marginBlocks);
+		System.out.printf("  largest share          %.1f%% of land in view%n",
+				land == 0 ? 0.0 : 100.0 * largestArea / land);
+
+		// A basin straddling a tile edge sits half in each tile, so half its span has
+		// to clear both extents, with room to spare for the divides around it. The
+		// bound is therefore 1.5 times the span, not the span itself.
+		if (largest * 1.5 > marginBlocks) {
+			System.out.printf("  *** largest basin needs %,.0f blocks of margin and has "
+					+ "%,.0f; two tiles could disagree about it%n", largest * 1.5, marginBlocks);
+		}
+	}
+
+	/**
+	 * Measures one province tile directly, without rendering anything.
+	 *
+	 * <p>Exists because a full batch takes five minutes and a routing question can be
+	 * answered in seconds. It reports the two things that decide whether a routing tier
+	 * is sound: how much of the surface ends up submerged under its own fill, and how
+	 * rough the surface looks at the spacing the tier samples it.
+	 *
+	 * <p><b>The roughness comparison is the important one.</b> If neighbouring samples
+	 * at the tier's own spacing differ by as much as samples taken a tenth of that
+	 * apart, the tier is not seeing terrain, it is seeing aliased noise, and routing
+	 * over noise gives incoherent basins no matter how correct the algorithm is.
+	 */
+	private static void printDrainageProbe(final TerrainModel.Snapshot world) {
+		DrainageSettings settings = DrainageSettings.defaults();
+		UpliftHeight uplift = world.uplift();
+
+		int extent = settings.provinceExtentCells();
+		double spacing = settings.provinceLatticeBlocks();
+
+		System.out.println("DRAINAGE PROBE, one province tile at the origin");
+		System.out.printf("  lattice              %,.0f blocks, %d x %d = %,d nodes%n",
+				spacing, extent, extent, extent * extent);
+
+		long started = System.nanoTime();
+
+		FlowLattice flow = new FlowLattice(extent, extent, spacing,
+				-settings.provinceMarginBlocks(), -settings.provinceMarginBlocks());
+		flow.sampleSurface(uplift.tectonic());
+
+		long sampled = System.nanoTime();
+
+		flow.floodFill(settings.baseLevelY());
+		flow.route();
+
+		long routed = System.nanoTime();
+
+		int land = 0;
+		int submerged = 0;
+		double deepest = 0.0;
+		double totalDepth = 0.0;
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.surface(i) <= settings.baseLevelY()) {
+				continue;
+			}
+
+			land++;
+			double depth = flow.filled(i) - flow.surface(i);
+
+			if (depth > 0.0) {
+				submerged++;
+				totalDepth += depth;
+				deepest = Math.max(deepest, depth);
+			}
+		}
+
+		System.out.printf("  sample surface       %,d ms%n", (sampled - started) / 1_000_000);
+		System.out.printf("  flood and route      %,d ms%n", (routed - sampled) / 1_000_000);
+		System.out.printf("  land nodes           %,d of %,d%n", land, flow.size());
+		System.out.printf("  submerged by fill    %.1f%% of land, deepest %,.0f blocks, mean %,.0f%n",
+				land == 0 ? 0.0 : 100.0 * submerged / land, deepest,
+				submerged == 0 ? 0.0 : totalDepth / submerged);
+
+		printRoughness(uplift, spacing);
+		printRoughness(uplift, settings.basinLatticeBlocks());
+		printRoughness(uplift, 250.0);
+
+		System.out.println();
+		System.out.println("  routing tectonics (what tier 1 actually uses):");
+		printBasinSizes(flow, settings);
+
+		// The same tile routed on tectonics alone. Region relief has a 2,300-block
+		// wavelength and this tier samples at 8,000, so the question is whether that
+		// term is carrying information here or just noise.
+		FlowLattice bare = new FlowLattice(extent, extent, spacing,
+				-settings.provinceMarginBlocks(), -settings.provinceMarginBlocks());
+		bare.sampleSurface(uplift.tectonic());
+		bare.floodFill(settings.baseLevelY());
+		bare.route();
+
+		System.out.println();
+		System.out.println("  routing tectonics alone (no region relief):");
+		printBasinSizes(bare, settings);
+		printRoughness2(uplift.tectonic(), spacing);
+		printRoughness2(uplift.tectonic(), settings.basinLatticeBlocks());
+	}
+
+	/**
+	 * How basin size is distributed across one tile.
+	 *
+	 * <p>The shape matters more than the count. Real drainage is heavy-tailed: a few
+	 * very large basins and a long tail of small coastal ones. If almost every basin
+	 * is one or two cells, flow is fragmenting and the tier is not producing drainage
+	 * at all, however plausible its total count looks.
+	 */
+	private static void printBasinSizes(final FlowLattice flow, final DrainageSettings settings) {
+		Map<Integer, Integer> sizes = new HashMap<>();
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.surface(i) <= settings.baseLevelY()) {
+				continue;
+			}
+
+			sizes.merge(flow.outletOf(i), 1, Integer::sum);
+		}
+
+		int[] counts = sizes.values().stream().mapToInt(Integer::intValue).sorted().toArray();
+
+		if (counts.length == 0) {
+			System.out.println("    no land");
+			return;
+		}
+
+		int total = java.util.Arrays.stream(counts).sum();
+		int singletons = (int) java.util.Arrays.stream(counts).filter(c -> c <= 2).count();
+		int largest = counts[counts.length - 1];
+		double cellArea = settings.provinceLatticeBlocks();
+
+		System.out.printf("    basins             %,d over %,d land cells%n", counts.length, total);
+		System.out.printf("    median size        %d cells%n", counts[counts.length / 2]);
+		System.out.printf("    largest            %,d cells, about %,.0f blocks across%n",
+				largest, Math.sqrt(largest) * cellArea);
+		System.out.printf("    tiny (1 to 2)      %.1f%% of basins%n",
+				100.0 * singletons / counts.length);
+		System.out.printf("    largest 10 hold    %.1f%% of land%n",
+				100.0 * java.util.Arrays.stream(counts, Math.max(0, counts.length - 10),
+						counts.length).sum() / total);
+	}
+
+	private static void printRoughness2(final HeightField field, final double spacing) {
+		int samples = 400;
+		double total = 0.0;
+		double previous = field.heightAt(0.0, 0.0);
+
+		for (int i = 1; i <= samples; i++) {
+			double height = field.heightAt(i * spacing, 0.0);
+			total += Math.abs(height - previous);
+			previous = height;
+		}
+
+		System.out.printf("    step at %,7.0f blocks  mean |dh| %,7.1f blocks%n",
+				spacing, total / samples);
+	}
+
+	/**
+	 * Mean absolute height difference between neighbouring samples at a given spacing.
+	 *
+	 * <p>On real terrain this falls as the spacing falls: two points 250 blocks apart
+	 * are more alike than two points 8,000 apart. If it stops falling, or rises, the
+	 * coarser spacing is aliasing a field finer than itself.
+	 */
+	private static void printRoughness(final UpliftHeight uplift, final double spacing) {
+		int samples = 400;
+		double total = 0.0;
+		double previous = uplift.heightAt(0.0, 0.0);
+
+		for (int i = 1; i <= samples; i++) {
+			double height = uplift.heightAt(i * spacing, 0.0);
+			total += Math.abs(height - previous);
+			previous = height;
+		}
+
+		System.out.printf("  step at %,7.0f blocks  mean |dh| %,7.1f blocks%n",
+				spacing, total / samples);
 	}
 
 	private static void writeTerrain(
