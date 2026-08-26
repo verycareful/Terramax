@@ -104,7 +104,12 @@ public final class DrainageMap {
 		network.nearestTwo(worldX, worldZ, nearest);
 
 		if (!nearest.found()) {
-			return DrainageSample.none(uplift.heightAt(worldX, worldZ));
+			double budget = uplift.heightAt(worldX, worldZ);
+
+			// No channel, but there can still be a lake: a closed depression with no
+			// stream reaching it is exactly where standing water collects.
+			return new DrainageSample(budget, Double.MAX_VALUE, 0.0, 0, 1.0,
+					network.lakeSurfaceAt(worldX, worldZ), network.endorheicAt(worldX, worldZ));
 		}
 
 		return new DrainageSample(
@@ -113,7 +118,16 @@ public final class DrainageMap {
 				nearest.discharge1,
 				nearest.order1,
 				nearest.hillslope(),
-				DrainageSample.NO_LAKE,
-				false);
+				network.lakeSurfaceAt(worldX, worldZ),
+				network.endorheicAt(worldX, worldZ));
+	}
+
+	/** The basin covering this point, for callers that need more than a sample. */
+	public boolean playaAt(final double worldX, final double worldZ) {
+		return networkAt(worldX, worldZ).playaAt(worldX, worldZ);
+	}
+
+	public boolean terminalLakeAt(final double worldX, final double worldZ) {
+		return networkAt(worldX, worldZ).terminalLakeAt(worldX, worldZ);
 	}
 }

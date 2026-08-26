@@ -199,6 +199,10 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.DISCHARGE);
 		writeTerrain("hillslope-local", local, world,
 				MapRenderer.TerrainLayer.HILLSLOPE);
+		writeTerrain("lakes-local", local, world,
+				MapRenderer.TerrainLayer.LAKES);
+		writeTerrain("lakes-continental", continental, world,
+				MapRenderer.TerrainLayer.LAKES);
 
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
@@ -596,6 +600,41 @@ public final class SimulatorMain {
 
 		double marginBlocks = DrainageSettings.defaults().provinceMarginBlocks();
 
+		// Water statistics over the same samples, so lakes are reported against many
+		// basins rather than whichever one the probe happened to pick.
+		int lake = 0;
+		int terminal = 0;
+		int playa = 0;
+		int endorheic = 0;
+
+		for (int iz = 0; iz < BASIN_SAMPLE_GRID; iz++) {
+			for (int ix = 0; ix < BASIN_SAMPLE_GRID; ix++) {
+				double worldX = minX + (ix + 0.5) * step;
+				double worldZ = minZ + (iz + 0.5) * step;
+				double height = terrain.heightAt(worldX, worldZ);
+
+				if (height <= MapPanel.SEA_LEVEL) {
+					continue;
+				}
+
+				var drain = world.drainage().sample(worldX, worldZ);
+
+				if (drain.endorheic()) {
+					endorheic++;
+				}
+
+				if (drain.lakeSurface() > height) {
+					lake++;
+
+					if (world.drainage().terminalLakeAt(worldX, worldZ)) {
+						terminal++;
+					}
+				} else if (world.drainage().playaAt(worldX, worldZ)) {
+					playa++;
+				}
+			}
+		}
+
 		System.out.println();
 		System.out.println("BASINS, over " + land + " land samples");
 		System.out.printf("  distinct basins        %,d%n", extents.size());
@@ -603,6 +642,18 @@ public final class SimulatorMain {
 				largest, largest * 1.5, marginBlocks);
 		System.out.printf("  largest share          %.1f%% of land in view%n",
 				land == 0 ? 0.0 : 100.0 * largestArea / land);
+
+		// Not compared against Earth's 2 percent. That figure is dominated by glacial
+		// lakes, and this world has no ice history yet: the design holds MORAINE and
+		// LAKE_LAND back until the glacial overprint exists. Earth's non-glacial lakes
+		// are closer to half a percent of land.
+		System.out.printf("  lakes                  %.2f%% of land, %.0f%% of them terminal"
+				+ "   [non-glacial Earth about 0.5%%]%n",
+				100.0 * lake / land, lake == 0 ? 0.0 : 100.0 * terminal / lake);
+		System.out.printf("  playas                 %.2f%% of land   [Earth about 0.3%%]%n",
+				100.0 * playa / land);
+		System.out.printf("  endorheic              %.1f%% of land drains to no sea   [Earth about 18%%]%n",
+				100.0 * endorheic / land);
 
 		// A basin straddling a tile edge sits half in each tile, so half its span has
 		// to clear both extents, with room to spare for the divides around it. The
@@ -837,9 +888,45 @@ public final class SimulatorMain {
 				network.channelSpacing(), settings.channelSpacingTargetBlocks());
 		System.out.printf("    mean distance to nearest channel %,.0f blocks%n",
 				probes == 0 ? 0.0 : totalNearest / probes);
+		System.out.printf("    lakes              %.2f%% of land, playas %.2f%%, "
+				+ "%d terminal lakes, %s%n",
+				100.0 * network.lakeAreaShare(), 100.0 * network.playaAreaShare(),
+				network.terminalLakeCount(),
+				String.format("%.1f%% endorheic", 100.0 * network.endorheicShare()));
+		System.out.printf("    closed basins      %d, %d sink cells, %d endorheic cells of %d land%n",
+				network.closedDepressionCount(), network.terminalSinkCount(),
+				network.endorheicCellCount(), network.landCells());
 		System.out.printf("    monotonic          %s, %d violations, worst rise %.2f blocks%n",
 				network.monotonic() ? "YES" : "NO", network.monotonicViolations(),
 				network.worstRise());
+
+		// Swept rather than chosen, the same way the potential-evaporation scale was.
+		// The target is Earth's roughly 18 percent of land draining to no sea.
+		System.out.println();
+		System.out.println("    closed-basin sill depth sweep   [Earth: about 18% endorheic]");
+
+		for (double depth : new double[] {0.0, 10.0, 25.0, 50.0, 100.0}) {
+			BasinNetwork swept = new BasinNetwork(
+					best, world.uplift(), world.moisture().gating(), basins,
+					new DrainageSettings(
+							settings.provinceLatticeBlocks(), settings.provinceTileBlocks(),
+							settings.provinceMarginBlocks(), settings.basinLatticeBlocks(),
+							settings.baseLevelY(), settings.channelSpacingTargetBlocks(),
+							settings.creekSpacingBlocks(), settings.creekLevels(),
+							settings.bifurcationRatio(), settings.lengthRatio(),
+							settings.junctionAngleMinDegrees(), settings.junctionAngleMaxDegrees(),
+							settings.hackExponent(), settings.slopeAreaExponent(),
+							settings.gradientScale(), settings.floodplainWidthFactor(),
+							settings.hillslopeExponent(), settings.detailFloorFraction(),
+							settings.evaporationFactor(), depth,
+							settings.bucketSizeBlocks(), settings.basinCacheLimit(),
+							settings.creekCacheLimit()));
+
+			System.out.printf("      sill >= %,6.0f blocks  ->  %5.1f%% endorheic, "
+					+ "%4d closed basins, %d terminal lakes, playas %.2f%%%n",
+					depth, 100.0 * swept.endorheicShare(), swept.closedDepressionCount(),
+					swept.terminalLakeCount(), 100.0 * swept.playaAreaShare());
+		}
 
 		printTrunkTransect(network, settings, orders, channelLength);
 	}

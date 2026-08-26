@@ -266,6 +266,20 @@ public final class MapRenderer {
 		 */
 		HILLSLOPE,
 
+		/**
+		 * Standing water, coloured by what kind.
+		 *
+		 * <p>Three colours rather than one, because the distinction is the whole point
+		 * of the water balance. A lake that overflows, a terminal lake that does not,
+		 * and a dry playa are three different outcomes of the same calculation, and a
+		 * single blue would hide which one happened.
+		 *
+		 * <p>The check to run against this render is against precipitation: playas and
+		 * terminal lakes belong in arid interiors. One in a wet region means the
+		 * balance is inverted.
+		 */
+		LAKES,
+
 		/** Temperature in degrees C, cold blue through white to hot red. */
 		TEMPERATURE,
 
@@ -511,6 +525,7 @@ public final class MapRenderer {
 			case DRAINAGE -> drainageColour(world, field, worldX, worldZ, minY, maxY, seaLevel);
 			case DISCHARGE -> dischargeColour(world, field, worldX, worldZ, seaLevel);
 			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel);
+			case LAKES -> lakeColour(world, field, worldX, worldZ, minY, maxY, seaLevel);
 			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
@@ -599,6 +614,46 @@ public final class MapRenderer {
 		float t = (float) world.drainage().sample(worldX, worldZ).hillslope();
 
 		return new Color(t, t, t).getRGB();
+	}
+
+	private static final Color LAKE_OVERFLOW = new Color(70, 150, 235);
+	private static final Color LAKE_TERMINAL = new Color(180, 90, 200);
+	private static final Color LAKE_PLAYA = new Color(228, 214, 170);
+
+	private static int lakeColour(
+			final TerrainModel.Snapshot world, final HeightField field,
+			final double worldX, final double worldZ,
+			final int minY, final int maxY, final int seaLevel) {
+		double height = field.heightAt(worldX, worldZ);
+
+		if (height <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		var drainage = world.drainage();
+		double surface = drainage.sample(worldX, worldZ).lakeSurface();
+
+		if (surface > height) {
+			// Shaded by depth so a deep rift lake reads differently from a shallow pan.
+			double depth = Math.min(1.0, (surface - height) / 60.0);
+			Color base = drainage.terminalLakeAt(worldX, worldZ)
+					? LAKE_TERMINAL : LAKE_OVERFLOW;
+			float shade = (float) (0.45 + 0.55 * depth);
+
+			return new Color(
+					(int) (base.getRed() * shade),
+					(int) (base.getGreen() * shade),
+					(int) (base.getBlue() * shade)).getRGB();
+		}
+
+		if (drainage.playaAt(worldX, worldZ)) {
+			return LAKE_PLAYA.getRGB();
+		}
+
+		Color ground = rawColour(height, minY, maxY);
+
+		return new Color(
+				ground.getRed() / 3, ground.getGreen() / 3, ground.getBlue() / 3).getRGB();
 	}
 
 	private static int basinIdColour(

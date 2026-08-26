@@ -40,6 +40,15 @@ package com.fury.terramax.core.fluvial;
  * resolution over its margined extent would be 16 million nodes rather than 16
  * thousand, to learn the same answer.
  *
+ * <p><b>{@code closedBasinMinDepthBlocks} is what keeps endorheic basins rare.</b> A
+ * 1,000-block lattice over noisy uplift finds hundreds of shallow depressions per
+ * basin, and letting every one of them close the drainage above it put 78 percent of an
+ * arid basin's land beyond reach of the sea, against about 18 percent on Earth. Most of
+ * those pits are a few blocks deep, and a river crossing a sill that shallow cuts
+ * through it rather than ponding behind it forever. Only a genuinely deep sill survives
+ * incision, and those are the basins the design is after: Caspian, Tarim, Great Basin,
+ * Lake Eyre.
+ *
  * <p>Five values here have no defensible starting guess and are found in the simulator
  * against the drainage statistics: {@code gradientScale},
  * {@code floodplainWidthFactor}, {@code hillslopeExponent},
@@ -65,6 +74,7 @@ package com.fury.terramax.core.fluvial;
  * @param hillslopeExponent          skew on the channel-to-divide profile; 1.0 is pure smoothstep
  * @param detailFloorFraction        detail amplitude at a channel, as a share of its amplitude at a divide
  * @param evaporationFactor          scales the vapour deficit that decides whether a lake spills
+ * @param closedBasinMinDepthBlocks  sill depth below which a depression is incised through, not closed
  * @param bucketSizeBlocks           spatial index cell for the nearest-channel search
  * @param basinCacheLimit            tier 2 solves held resident
  * @param creekCacheLimit            tier 3 patches held resident
@@ -89,6 +99,7 @@ public record DrainageSettings(
 		double hillslopeExponent,
 		double detailFloorFraction,
 		double evaporationFactor,
+		double closedBasinMinDepthBlocks,
 		double bucketSizeBlocks,
 		int basinCacheLimit,
 		int creekCacheLimit) {
@@ -126,6 +137,7 @@ public record DrainageSettings(
 				1.0,          // hillslopeExponent
 				0.15,         // detailFloorFraction
 				1.0,          // evaporationFactor
+				75.0,         // closedBasinMinDepthBlocks
 				2_000.0,      // bucketSizeBlocks
 				24,           // basinCacheLimit
 				4_096);       // creekCacheLimit

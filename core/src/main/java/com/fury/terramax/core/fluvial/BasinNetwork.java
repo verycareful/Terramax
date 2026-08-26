@@ -49,6 +49,18 @@ public final class BasinNetwork {
 	/** Hard ceiling on lattice side, so a pathological basin cannot allocate freely. */
 	private static final int MAX_LATTICE_CELLS = 420;
 
+	/**
+	 * Bisection steps when solving a lake level.
+	 *
+	 * <p>Twenty-four halvings resolve a 1,000-block depression to well under a block,
+	 * which is finer than the terrain can express, so the answer is exact for every
+	 * purpose the world has.
+	 */
+	private static final int BISECTION_STEPS = 24;
+
+	/** Water this shallow is not a lake. Below it a closed basin reads as a dry floor. */
+	private static final double PLAYA_DEPTH_BLOCKS = 1.0;
+
 	private final long outletKey;
 	private final DrainageSettings settings;
 	private final FlowLattice flow;
@@ -81,6 +93,23 @@ public final class BasinNetwork {
 	private double meanRain;
 	private double meanDeficit;
 	private double meanRetention;
+
+	private double[] gain;
+	private double[] retention;
+	private double[] cellDeficit;
+	private double[] cellRain;
+
+	private double[] lakeLevel;
+	private boolean[] terminalLake;
+	private boolean[] playa;
+	private boolean[] terminalSink;
+	private int[] depressionId;
+	private boolean[] endorheicCell;
+	private int endorheicCells;
+	private int lakeCells;
+	private int playaCells;
+	private int terminalLakes;
+	private int closedDepressions;
 
 	public BasinNetwork(
 			final long outletKey, final HeightField uplift, final MoistureField moisture,
@@ -116,6 +145,15 @@ public final class BasinNetwork {
 		flow.route();
 
 		accumulateDischarge(moisture);
+
+		// Lakes are resolved between the two accumulation passes, and both passes are
+		// needed. The first has to assume every depression spills, because until the
+		// water balance is solved there is no way to know which do. The second runs
+		// with the terminal lakes in place as sinks, so a river that ends in a closed
+		// basin stops there instead of carrying phantom water to the sea.
+		resolveLakes();
+		markEndorheic();
+		reaccumulateBelowLakes();
 
 		this.threshold = calibrateThreshold();
 
@@ -235,8 +273,10 @@ public final class BasinNetwork {
 	 */
 	private void accumulateDischarge(final MoistureField moisture) {
 		int size = flow.size();
-		double[] gain = new double[size];
-		double[] retention = new double[size];
+		gain = new double[size];
+		retention = new double[size];
+		cellDeficit = new double[size];
+		cellRain = new double[size];
 		double spacing = flow.spacing();
 
 		double rainSum = 0.0;
@@ -259,6 +299,8 @@ public final class BasinNetwork {
 
 			gain[i] = Math.max(0.0, rain - evaporated);
 			retention[i] = Math.exp(-spacing * deficit / CHANNEL_LOSS_LENGTH_BLOCKS);
+			cellDeficit[i] = deficit;
+			cellRain[i] = rain;
 
 			if (flow.surface(i) > settings.baseLevelY()) {
 				land++;
@@ -274,6 +316,424 @@ public final class BasinNetwork {
 		meanRetention = land == 0 ? 1.0 : retentionSum / land;
 
 		flow.accumulate(i -> gain[i], i -> retention[i]);
+	}
+
+	/**
+	 * Re-runs accumulation with terminal lakes acting as sinks.
+	 *
+	 * <p>A lake that never reaches its spill point does not pass water on, so anything
+	 * downstream of it is fed only by its own catchment. Skipping this pass would leave
+	 * a full-sized river flowing out of a closed basin, which is the exact thing an
+	 * endorheic basin is defined by not doing.
+	 */
+	private void reaccumulateBelowLakes() {
+		if (terminalLakes == 0) {
+			return;
+		}
+
+		flow.accumulate(
+				i -> terminalSink[i] ? 0.0 : gain[i],
+				i -> terminalSink[i] ? 0.0 : retention[i]);
+	}
+
+	/**
+	 * Decides what standing water each depression holds.
+	 *
+	 * <p><b>Climate decides whether a basin spills, not topography alone.</b> Filling
+	 * every depression to its rim would put brimming lakes in deserts wherever the
+	 * ground happens to dip, and would make endorheic basins rare and accidental. On
+	 * Earth they are common precisely because arid interiors are arid: the Caspian is
+	 * closed because more water leaves its surface than arrives, not because its rim
+	 * is unusually high.
+	 *
+	 * <p>Depressions come out of the flood already grouped: priority-flood raises every
+	 * cell to the level of the lowest rim it sits behind, so one connected run of cells
+	 * sharing a filled elevation is one depression, and that elevation is its spill
+	 * point. Nothing has to be searched for.
+	 */
+	private void resolveLakes() {
+		int size = flow.size();
+		lakeLevel = new double[size];
+		terminalLake = new boolean[size];
+		playa = new boolean[size];
+		terminalSink = new boolean[size];
+		depressionId = new int[size];
+		Arrays.fill(lakeLevel, DrainageSample.NO_LAKE);
+		Arrays.fill(depressionId, -1);
+
+		boolean[] visited = new boolean[size];
+		int[] stack = new int[size];
+		int[] group = new int[size];
+		int nextId = 0;
+
+		for (int start = 0; start < size; start++) {
+			if (visited[start] || !flow.submerged(start)) {
+				continue;
+			}
+
+			double spill = flow.filled(start);
+			int id = nextId++;
+			int count = 0;
+			int top = 0;
+			stack[top++] = start;
+			visited[start] = true;
+			depressionId[start] = id;
+
+			while (top > 0) {
+				int i = stack[--top];
+				group[count++] = i;
+
+				int ix = flow.cellX(i);
+				int iz = flow.cellZ(i);
+
+				for (int dz = -1; dz <= 1; dz++) {
+					for (int dx = -1; dx <= 1; dx++) {
+						int nx = ix + dx;
+						int nz = iz + dz;
+
+						if ((dx == 0 && dz == 0) || nx < 0 || nz < 0
+								|| nx >= flow.width() || nz >= flow.depth()) {
+							continue;
+						}
+
+						int j = flow.index(nx, nz);
+
+						if (!visited[j] && flow.submerged(j) && flow.filled(j) == spill) {
+							visited[j] = true;
+							depressionId[j] = id;
+							stack[top++] = j;
+						}
+					}
+				}
+			}
+
+			solveLake(group, count, spill);
+		}
+	}
+
+	/**
+	 * Where one depression's water surface settles, by balancing inflow against
+	 * evaporation from the surface that inflow would create.
+	 *
+	 * <p>Area grows with level, so loss grows with level while inflow does not. There is
+	 * therefore exactly one crossing and bisection finds it. Three outcomes fall out of
+	 * where that crossing lies: at or above the rim the lake overflows and the basin is
+	 * exorheic, between rim and floor it is a terminal lake, and at or below the floor
+	 * there is not enough water to stand at all and what is left is a dry playa, which
+	 * is where salt collects.
+	 *
+	 * <p>A lake evaporates at the <b>potential</b> rate, not the Turc-Pike rate the land
+	 * around it uses. That difference is the point: open water has an unlimited supply
+	 * to evaporate from, which is why a lake in a desert loses so much more than the
+	 * desert beside it.
+	 */
+	private void solveLake(final int[] group, final int count, final double spill) {
+		double[] surfaces = new double[count];
+		double inflow = 0.0;
+		double deficitSum = 0.0;
+		double rainSum = 0.0;
+
+		for (int k = 0; k < count; k++) {
+			int i = group[k];
+			surfaces[k] = flow.surface(i);
+			inflow = Math.max(inflow, flow.accumulated(i));
+			deficitSum += cellDeficit[i];
+			rainSum += cellRain[i];
+		}
+
+		Arrays.sort(surfaces);
+
+		// A sill this shallow does not survive, and neither does the hollow behind it.
+		// A river ponding behind a few blocks of rock incises through the sill, and the
+		// same incision drains what was ponded, so the depression ends up as ordinary
+		// valley floor rather than as a lake.
+		//
+		// Both halves of that matter. Skipping the check entirely made every sampling
+		// artifact in the lattice a closed basin and put 78 percent of an arid basin
+		// beyond reach of the sea. Filling these to the rim instead put 19 percent of
+		// land under water, against about 2 percent on Earth. Draining them is what is
+		// actually happening on the ground.
+		if (spill - surfaces[0] < settings.closedBasinMinDepthBlocks()) {
+			return;
+		}
+
+		double potential = settings.evaporationFactor() * (deficitSum / count);
+		double lossPerCell = potential - rainSum / count;
+
+		// Damper than it is thirsty: the lake gains more from rain than it loses to the
+		// air, so it can only rise, and it fills to the rim whatever its catchment does.
+		if (lossPerCell <= 0.0) {
+			applyLake(group, count, spill, false, false);
+			return;
+		}
+
+		if (lossPerCell * count <= inflow) {
+			applyLake(group, count, spill, false, false);
+			return;
+		}
+
+		double low = surfaces[0];
+		double high = spill;
+
+		for (int step = 0; step < BISECTION_STEPS; step++) {
+			double mid = (low + high) * 0.5;
+
+			if (lossPerCell * areaBelow(surfaces, mid) < inflow) {
+				low = mid;
+			} else {
+				high = mid;
+			}
+		}
+
+		double level = (low + high) * 0.5;
+		boolean dry = level <= surfaces[0] + PLAYA_DEPTH_BLOCKS;
+
+		applyLake(group, count, dry ? surfaces[0] : level, true, dry);
+	}
+
+	/** Cells whose ground sits below a candidate water level. */
+	private static int areaBelow(final double[] sortedSurfaces, final double level) {
+		int low = 0;
+		int high = sortedSurfaces.length;
+
+		while (low < high) {
+			int mid = (low + high) >>> 1;
+
+			if (sortedSurfaces[mid] < level) {
+				low = mid + 1;
+			} else {
+				high = mid;
+			}
+		}
+
+		return low;
+	}
+
+	/**
+	 * Writes one solved depression into the per-cell fields.
+	 *
+	 * <p><b>A dry basin's playa is its floor, not its footprint.</b> The group covers
+	 * everything that would be underwater if the depression filled to its rim, which for
+	 * a basin that never fills is mostly dry hillside above the pan. Marking all of it
+	 * put playas on 21 percent of land in an arid basin, against a fraction of a percent
+	 * on Earth. Only ground within a shallow depth of the floor is a salt pan.
+	 */
+	private void applyLake(
+			final int[] group, final int count, final double level,
+			final boolean terminal, final boolean dry) {
+		// Counted only where water actually stands. A depression that came out dry is a
+		// playa, not a lake, and calling it one made 795 of them out of a single basin.
+		if (terminal) {
+			closedDepressions++;
+
+			if (!dry) {
+				terminalLakes++;
+			}
+		}
+
+		for (int k = 0; k < count; k++) {
+			int i = group[k];
+
+			if (dry) {
+				if (flow.surface(i) <= level + PLAYA_DEPTH_BLOCKS) {
+					playa[i] = true;
+					playaCells++;
+				}
+			} else if (flow.surface(i) < level) {
+				lakeLevel[i] = level;
+				terminalLake[i] = terminal;
+				lakeCells++;
+			}
+
+			// A closed basin passes nothing on, so flow is stopped at whichever of its
+			// cells drains out of the group.
+			//
+			// Membership decides that, not elevation. Every cell in a filled depression
+			// shares one filled value, and so does the rim it would spill over, which is
+			// not in the group because it is not submerged. Testing for a lower
+			// downstream neighbour therefore never fires: it found 0 sink cells across
+			// 795 closed basins.
+			if (terminal) {
+				int next = flow.downstream(i);
+
+				if (next < 0 || depressionId[next] != depressionId[i]) {
+					terminalSink[i] = true;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Standing water level at a point, or {@link DrainageSample#NO_LAKE}.
+	 *
+	 * <p>Takes the highest level among the four surrounding cells rather than the one
+	 * containing the point, which extends a lake's influence one cell past its edge.
+	 * That matters: the shoreline is drawn where the finished ground crosses this level,
+	 * not where the lattice says the lake ends, so the level has to be available
+	 * slightly outside the lake for the crossing to be found. A shoreline that followed
+	 * the lattice would be a staircase with 1,000-block steps.
+	 */
+	public double lakeSurfaceAt(final double worldX, final double worldZ) {
+		if (lakeCells == 0) {
+			return DrainageSample.NO_LAKE;
+		}
+
+		int ix = (int) Math.floor((worldX - originX) / flow.spacing());
+		int iz = (int) Math.floor((worldZ - originZ) / flow.spacing());
+		double best = DrainageSample.NO_LAKE;
+
+		for (int dz = 0; dz <= 1; dz++) {
+			for (int dx = 0; dx <= 1; dx++) {
+				int cx = ix + dx;
+				int cz = iz + dz;
+
+				if (cx < 0 || cz < 0 || cx >= flow.width() || cz >= flow.depth()) {
+					continue;
+				}
+
+				best = Math.max(best, lakeLevel[flow.index(cx, cz)]);
+			}
+		}
+
+		return best;
+	}
+
+	/** True where this point sits on a dried-out closed basin floor. */
+	public boolean playaAt(final double worldX, final double worldZ) {
+		if (playaCells == 0) {
+			return false;
+		}
+
+		int ix = (int) Math.floor((worldX - originX) / flow.spacing());
+		int iz = (int) Math.floor((worldZ - originZ) / flow.spacing());
+
+		if (ix < 0 || iz < 0 || ix >= flow.width() || iz >= flow.depth()) {
+			return false;
+		}
+
+		return playa[flow.index(ix, iz)];
+	}
+
+	/** True where this point is under a lake that never reaches its spill point. */
+	public boolean terminalLakeAt(final double worldX, final double worldZ) {
+		int ix = (int) Math.floor((worldX - originX) / flow.spacing());
+		int iz = (int) Math.floor((worldZ - originZ) / flow.spacing());
+
+		if (ix < 0 || iz < 0 || ix >= flow.width() || iz >= flow.depth()) {
+			return false;
+		}
+
+		return terminalLake[flow.index(ix, iz)];
+	}
+
+	/**
+	 * Marks every cell whose water never reaches the sea.
+	 *
+	 * <p><b>Endorheism is a climate outcome here, not a topological one, and it has to
+	 * be.</b> Priority-flood removes every internal sink by construction, so after it
+	 * runs there is no such thing as ground with no way out: asking whether a basin's
+	 * outlet lies below sea level returns yes for every basin in the world. Defining it
+	 * that way reported zero endorheic land on a continent full of dry closed basins.
+	 *
+	 * <p>What actually closes a basin is a lake that never fills to its rim. Water
+	 * arrives, evaporates, and the chain to the sea is broken at that point even though
+	 * the ground beyond it still slopes downhill. Everything upstream of such a lake is
+	 * endorheic, which is why the Caspian's catchment is and the Volga's headwaters are.
+	 *
+	 * <p>Resolved in forward pop order, which visits a cell after the cell it drains
+	 * into, so the answer downstream is always already known.
+	 */
+	private void markEndorheic() {
+		int size = flow.size();
+		endorheicCell = new boolean[size];
+
+		// Guarded on closed depressions, not on lakes. A dry playa is the driest kind
+		// of closed basin, not a basin that failed to be one: water still arrives there
+		// and still never leaves. Checking for lakes alone reported 0.1 percent of land
+		// as endorheic on a continent whose closed basins are mostly dry.
+		if (closedDepressions == 0) {
+			return;
+		}
+
+		int[] processOrder = flow.processOrder();
+
+		for (int rank = 0; rank < size; rank++) {
+			int i = processOrder[rank];
+			int next = flow.downstream(i);
+
+			// A cell is endorheic if it is where the chain breaks, or if the cell it
+			// drains into is. Everything upstream of a closed basin is closed with it,
+			// which is why the Volga's headwaters are endorheic and not just the
+			// Caspian's shore. A cell leaving through the lattice edge belongs to a
+			// neighbouring basin and counts as reaching the sea rather than being
+			// guessed at.
+			endorheicCell[i] = terminalSink[i] || (next >= 0 && endorheicCell[next]);
+
+			if (endorheicCell[i] && flow.surface(i) > settings.baseLevelY()) {
+				endorheicCells++;
+			}
+		}
+	}
+
+	/** Closed depressions found, whether they hold water or dried out. */
+	public int closedDepressionCount() {
+		return closedDepressions;
+	}
+
+	/** Cells where a closed basin breaks the chain to the sea. */
+	public int terminalSinkCount() {
+		int count = 0;
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (terminalSink[i]) {
+				count++;
+			}
+		}
+
+		return count;
+	}
+
+	public int endorheicCellCount() {
+		return endorheicCells;
+	}
+
+	/** True where water at this point never reaches the sea. */
+	public boolean endorheicAt(final double worldX, final double worldZ) {
+		if (endorheicCells == 0) {
+			return false;
+		}
+
+		int ix = (int) Math.floor((worldX - originX) / flow.spacing());
+		int iz = (int) Math.floor((worldZ - originZ) / flow.spacing());
+
+		if (ix < 0 || iz < 0 || ix >= flow.width() || iz >= flow.depth()) {
+			return false;
+		}
+
+		return endorheicCell[flow.index(ix, iz)];
+	}
+
+	/** Share of this lattice's land that drains to no sea. */
+	public double endorheicShare() {
+		int land = landCells();
+
+		return land == 0 ? 0.0 : (double) endorheicCells / land;
+	}
+
+	public int terminalLakeCount() {
+		return terminalLakes;
+	}
+
+	public double lakeAreaShare() {
+		int land = landCells();
+
+		return land == 0 ? 0.0 : (double) lakeCells / land;
+	}
+
+	public double playaAreaShare() {
+		int land = landCells();
+
+		return land == 0 ? 0.0 : (double) playaCells / land;
 	}
 
 	/**
