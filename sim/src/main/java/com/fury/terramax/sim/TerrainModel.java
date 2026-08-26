@@ -5,6 +5,7 @@ import com.fury.terramax.core.climate.MoistureSettings;
 import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.WindField;
 import com.fury.terramax.core.fluvial.BasinIndex;
+import com.fury.terramax.core.fluvial.DrainageMap;
 import com.fury.terramax.core.fluvial.DrainageSettings;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
@@ -78,7 +79,7 @@ public final class TerrainModel {
 	public record Snapshot(
 			PlateMap plates, RegionMap regions, TerrainHeight terrain,
 			TemperatureField temperature, WindField wind, MoistureScale moisture,
-			UpliftHeight uplift, BasinIndex basins) {
+			UpliftHeight uplift, BasinIndex basins, DrainageMap drainage) {
 	}
 
 	public Snapshot snapshot() {
@@ -180,9 +181,15 @@ public final class TerrainModel {
 		// moisture field at province scale. Tier 2 routes uplift, where it counts.
 		BasinIndex basins = new BasinIndex(tectonic, drainageSettings);
 
+		// Tiers 2 and 3, behind one lookup. Reads the full uplift surface, where a
+		// plateau does redirect a river, and the coarse gating moisture, because
+		// precipitation varies over tens of thousands of blocks.
+		DrainageMap drainage = new DrainageMap(
+				uplift, moisture.gating(), basins, drainageSettings);
+
 		this.snapshot = new Snapshot(
 				plates, regions,
 				new TerrainHeight(seed, uplift, terrainSettings),
-				temperature, wind, moisture, uplift, basins);
+				temperature, wind, moisture, uplift, basins, drainage);
 	}
 }

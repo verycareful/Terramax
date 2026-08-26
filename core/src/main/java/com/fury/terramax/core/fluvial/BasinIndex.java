@@ -46,7 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class BasinIndex {
 	private final HeightField surface;
 	private final DrainageSettings settings;
-	private final Map<Long, long[]> tiles = new ConcurrentHashMap<>();
+	private final Map<Long, Tile> tiles = new ConcurrentHashMap<>();
 
 	public BasinIndex(final HeightField surface, final DrainageSettings settings) {
 		this.surface = surface;
@@ -86,12 +86,80 @@ public final class BasinIndex {
 		return surface.heightAt(outletWorldX(key), outletWorldZ(key)) <= settings.baseLevelY();
 	}
 
+	/**
+	 * One solved province tile: an outlet per cell, and the extent of every basin the
+	 * tile saw.
+	 *
+	 * @param outlets outlet key per tile cell, row-major
+	 * @param bounds  outlet key to min and max global cell coordinates, plus cell count
+	 */
+	private record Tile(long[] outlets, Map<Long, int[]> bounds) {
+	}
+
+	/**
+	 * The extent of a basin in world blocks, as min x, min z, max x, max z.
+	 *
+	 * <p><b>Looked up in the tile that owns the outlet, never in the tile that owns
+	 * the caller.</b> The outlet lies inside its own basin and the margin exceeds the
+	 * basin by a wide factor, so that tile always saw the whole thing and every caller
+	 * gets the same box. Asking the caller's tile instead would give a box clipped at
+	 * the tile edge, and therefore a differently shaped basin on each side of it,
+	 * which is the seam this design exists to avoid.
+	 */
+	public double[] boundsOf(final long outletKey) {
+		double spacing = settings.provinceLatticeBlocks();
+		double outletX = outletWorldX(outletKey);
+		double outletZ = outletWorldZ(outletKey);
+
+		long tileX = Math.floorDiv((long) Math.floor(outletX), (long) settings.provinceTileBlocks());
+		long tileZ = Math.floorDiv((long) Math.floor(outletZ), (long) settings.provinceTileBlocks());
+
+		int[] cells = tile(tileX, tileZ).bounds().get(outletKey);
+
+		if (cells == null) {
+			// Should not happen, since the outlet's own tile saw the basin. Degrade to
+			// a one-cell basin rather than failing: a defect here should make a small
+			// wrong river, not stop world generation.
+			return new double[] {outletX - spacing, outletZ - spacing,
+					outletX + spacing, outletZ + spacing};
+		}
+
+		if (cells.length < 5) {
+			return new double[] {
+				cells[0] * spacing, cells[1] * spacing,
+				(cells[2] + 1) * spacing, (cells[3] + 1) * spacing};
+		}
+
+		return new double[] {
+			cells[0] * spacing, cells[1] * spacing,
+			(cells[2] + 1) * spacing, (cells[3] + 1) * spacing};
+	}
+
+	/**
+	 * How many province cells drain to this outlet.
+	 *
+	 * <p>Area, not the bounding box. An elongated coastal basin can have an enormous
+	 * box and very little land in it, so the box is the wrong way to ask which basin is
+	 * large.
+	 */
+	public int cellCountOf(final long outletKey) {
+		double outletX = outletWorldX(outletKey);
+		double outletZ = outletWorldZ(outletKey);
+
+		long tileX = Math.floorDiv((long) Math.floor(outletX), (long) settings.provinceTileBlocks());
+		long tileZ = Math.floorDiv((long) Math.floor(outletZ), (long) settings.provinceTileBlocks());
+
+		int[] cells = tile(tileX, tileZ).bounds().get(outletKey);
+
+		return cells == null || cells.length < 5 ? 1 : cells[4];
+	}
+
 	/** The canonical outlet of the basin containing this point. */
 	public long outletAt(final double worldX, final double worldZ) {
 		long tileX = Math.floorDiv((long) Math.floor(worldX), (long) settings.provinceTileBlocks());
 		long tileZ = Math.floorDiv((long) Math.floor(worldZ), (long) settings.provinceTileBlocks());
 
-		long[] outlets = tileOutlets(tileX, tileZ);
+		long[] outlets = tile(tileX, tileZ).outlets();
 
 		int tileCells = settings.provinceTileCells();
 		double tileOriginX = tileX * settings.provinceTileBlocks();
@@ -110,23 +178,23 @@ public final class BasinIndex {
 		long tileX = Math.floorDiv((long) Math.floor(worldX), (long) settings.provinceTileBlocks());
 		long tileZ = Math.floorDiv((long) Math.floor(worldZ), (long) settings.provinceTileBlocks());
 
-		return (int) java.util.Arrays.stream(tileOutlets(tileX, tileZ)).distinct().count();
+		return (int) java.util.Arrays.stream(tile(tileX, tileZ).outlets()).distinct().count();
 	}
 
-	private long[] tileOutlets(final long tileX, final long tileZ) {
+	private Tile tile(final long tileX, final long tileZ) {
 		long tileKey = packCell((int) tileX, (int) tileZ);
-		long[] outlets = tiles.get(tileKey);
+		Tile cached = tiles.get(tileKey);
 
-		if (outlets != null) {
-			return outlets;
+		if (cached != null) {
+			return cached;
 		}
 
 		// Deliberate get-then-put rather than computeIfAbsent. A province solve is
 		// 16,384 uplift samples and computeIfAbsent would hold a bin lock across all
 		// of it, blocking every unrelated tile that hashes to the same bin. Two
 		// threads racing on the same tile is the cheaper problem.
-		long[] solved = solveTile(tileX, tileZ);
-		long[] existing = tiles.putIfAbsent(tileKey, solved);
+		Tile solved = solveTile(tileX, tileZ);
+		Tile existing = tiles.putIfAbsent(tileKey, solved);
 
 		return existing != null ? existing : solved;
 	}
@@ -135,7 +203,7 @@ public final class BasinIndex {
 		return Math.max(0, Math.min(limit - 1, value));
 	}
 
-	private long[] solveTile(final long tileX, final long tileZ) {
+	private Tile solveTile(final long tileX, final long tileZ) {
 		double spacing = settings.provinceLatticeBlocks();
 		int marginCells = settings.provinceMarginCells();
 		int tileCells = settings.provinceTileCells();
@@ -150,11 +218,39 @@ public final class BasinIndex {
 		flow.route();
 
 		long[] outlets = new long[tileCells * tileCells];
+		Map<Long, int[]> bounds = new java.util.HashMap<>();
 
 		// The lattice origin in global cell coordinates, so an outlet's key is the
 		// same value no matter which tile resolved it. This is the whole point.
 		long globalOriginX = Math.round(originX / spacing);
 		long globalOriginZ = Math.round(originZ / spacing);
+
+		// Bounds are gathered over the whole margined extent rather than over the
+		// tile. A basin lying mostly in a neighbouring tile still gets its true extent
+		// recorded here, which is what makes the box identical whoever asks.
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.surface(i) <= settings.baseLevelY()) {
+				continue;
+			}
+
+			int outlet = flow.outletOf(i);
+			int globalX = (int) (globalOriginX + flow.cellX(i));
+			int globalZ = (int) (globalOriginZ + flow.cellZ(i));
+			long key = packCell((int) (globalOriginX + flow.cellX(outlet)),
+					(int) (globalOriginZ + flow.cellZ(outlet)));
+
+			int[] box = bounds.get(key);
+
+			if (box == null) {
+				bounds.put(key, new int[] {globalX, globalZ, globalX, globalZ, 1});
+			} else {
+				box[0] = Math.min(box[0], globalX);
+				box[1] = Math.min(box[1], globalZ);
+				box[2] = Math.max(box[2], globalX);
+				box[3] = Math.max(box[3], globalZ);
+				box[4]++;
+			}
+		}
 
 		for (int iz = 0; iz < tileCells; iz++) {
 			for (int ix = 0; ix < tileCells; ix++) {
@@ -167,6 +263,6 @@ public final class BasinIndex {
 			}
 		}
 
-		return outlets;
+		return new Tile(outlets, bounds);
 	}
 }

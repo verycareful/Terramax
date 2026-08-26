@@ -8,7 +8,9 @@ import java.nio.file.Path;
 
 import javax.imageio.ImageIO;
 
+import com.fury.terramax.core.climate.MoistureField;
 import com.fury.terramax.core.fluvial.BasinIndex;
+import com.fury.terramax.core.fluvial.BasinNetwork;
 import com.fury.terramax.core.fluvial.DrainageSettings;
 import com.fury.terramax.core.fluvial.FlowLattice;
 import com.fury.terramax.core.plate.CrustType;
@@ -189,6 +191,14 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.BASIN_ID);
 		writeTerrain("basins-planetary", planetary, world,
 				MapRenderer.TerrainLayer.BASIN_ID);
+		writeTerrain("drainage-local", local, world,
+				MapRenderer.TerrainLayer.DRAINAGE);
+		writeTerrain("drainage-continental", continental, world,
+				MapRenderer.TerrainLayer.DRAINAGE);
+		writeTerrain("discharge-local", local, world,
+				MapRenderer.TerrainLayer.DISCHARGE);
+		writeTerrain("hillslope-local", local, world,
+				MapRenderer.TerrainLayer.HILLSLOPE);
 
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
@@ -671,6 +681,8 @@ public final class SimulatorMain {
 		printRoughness(uplift, settings.basinLatticeBlocks());
 		printRoughness(uplift, 250.0);
 
+		printWaterBalance(world);
+
 		System.out.println();
 		System.out.println("  routing tectonics (what tier 1 actually uses):");
 		printBasinSizes(flow, settings);
@@ -689,6 +701,305 @@ public final class SimulatorMain {
 		printBasinSizes(bare, settings);
 		printRoughness2(uplift.tectonic(), spacing);
 		printRoughness2(uplift.tectonic(), settings.basinLatticeBlocks());
+
+		printBasinNetwork(world, settings);
+	}
+
+	/**
+	 * Builds tier 2 for the largest basin in reach and reports what came out.
+	 *
+	 * <p>The monotonicity line is the one that matters. Everything else describes how
+	 * the network looks; that line says whether it is a network at all.
+	 */
+	private static void printBasinNetwork(
+			final TerrainModel.Snapshot world, final DrainageSettings settings) {
+		BasinIndex basins = world.basins();
+		HeightField terrain = world.terrain();
+
+		long best = 0L;
+		int bestCells = -1;
+		boolean any = false;
+
+		// Selected by area, not by bounding box. An elongated coastal basin can have a
+		// box spanning 144,000 blocks and almost no land inside it, which is exactly
+		// how a 14-cell river came to be reported as the largest basin in reach.
+		for (int iz = -20; iz <= 20; iz++) {
+			for (int ix = -20; ix <= 20; ix++) {
+				double worldX = ix * 12_000.0;
+				double worldZ = iz * 12_000.0;
+
+				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+					continue;
+				}
+
+				long outlet = basins.outletAt(worldX, worldZ);
+				int cells = basins.cellCountOf(outlet);
+
+				if (cells > bestCells) {
+					bestCells = cells;
+					best = outlet;
+					any = true;
+				}
+			}
+		}
+
+		double[] bestBounds = basins.boundsOf(best);
+		double bestSpan = Math.max(bestBounds[2] - bestBounds[0], bestBounds[3] - bestBounds[1]);
+
+		if (!any) {
+			System.out.println("  no land found for a basin network");
+			return;
+		}
+
+		System.out.println();
+		System.out.printf("  TIER 2, largest basin in reach: %,d province cells, "
+				+ "box span %,.0f blocks%n", bestCells, bestSpan);
+
+		long started = System.nanoTime();
+		BasinNetwork network = new BasinNetwork(
+				best, world.uplift(), world.moisture().gating(), basins, settings);
+		long built = System.nanoTime();
+
+		FlowLattice flow = network.lattice();
+
+		double channelLength = 0.0;
+		double landArea = 0.0;
+		double maxDischarge = 0.0;
+		int[] orders = new int[12];
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.surface(i) > settings.baseLevelY()) {
+				landArea += flow.spacing() * flow.spacing();
+			}
+
+			maxDischarge = Math.max(maxDischarge, flow.accumulated(i));
+		}
+
+		System.out.printf("    lattice            %d x %d, built in %,d ms%s%n",
+				flow.width(), flow.depth(), (built - started) / 1_000_000,
+				network.clamped() ? "  *** CLAMPED" : "");
+		int landCells = 0;
+		double totalFlow = 0.0;
+		int terminals = 0;
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.surface(i) > settings.baseLevelY()) {
+				landCells++;
+			}
+
+			if (flow.downstream(i) < 0) {
+				terminals++;
+				totalFlow += flow.accumulated(i);
+			}
+		}
+
+		System.out.printf("    land cells         %,d of %,d in the box%n", landCells, flow.size());
+		System.out.printf("    terminal cells     %,d, carrying %.3f total%n", terminals, totalFlow);
+		System.out.printf("    flood reached      %,d of %,d cells%s%n",
+				flow.processed(), flow.size(),
+				flow.processed() == flow.size() ? "" : "  *** CELLS NEVER VISITED");
+		System.out.printf("    runoff produced    %.3f total, %.3f arrives   [%.1f%% conserved]%n",
+				network.totalGain(), totalFlow,
+				network.totalGain() <= 0.0 ? 0.0 : 100.0 * totalFlow / network.totalGain());
+		System.out.printf("    rain %.5f, deficit %.3f, runoff ratio %.3f   [Earth 0.35]%n",
+				network.meanRain(), network.meanDeficit(), network.runoffRatio());
+		System.out.printf("    mean retention     %.5f per cell, so %.1f%% survives 100,000 blocks%n",
+				network.meanRetention(), 100.0 * Math.pow(network.meanRetention(), 100));
+		System.out.printf("    channel segments   %,d%n", network.segmentCount());
+		System.out.printf("    threshold          %.6f, max discharge %.4f%n",
+				network.threshold(), maxDischarge);
+
+		// Drainage density: area divided by total channel length is the mean distance
+		// between neighbouring channels, which is the number the design targets.
+		BasinNetwork.Nearest probe = new BasinNetwork.Nearest();
+		double totalNearest = 0.0;
+		int probes = 0;
+
+		for (int iz = 0; iz < flow.depth(); iz += 3) {
+			for (int ix = 0; ix < flow.width(); ix += 3) {
+				int i = flow.index(ix, iz);
+
+				if (flow.surface(i) <= settings.baseLevelY()) {
+					continue;
+				}
+
+				network.nearestTwo(flow.worldX(ix), flow.worldZ(iz), probe);
+
+				if (probe.found()) {
+					totalNearest += probe.distance1;
+					probes++;
+				}
+			}
+		}
+
+		System.out.printf("    channel spacing    %,.0f blocks   [tier 2 target %,.0f, "
+				+ "1,500 to 3,000 after tier 3]%n",
+				network.channelSpacing(), settings.channelSpacingTargetBlocks());
+		System.out.printf("    mean distance to nearest channel %,.0f blocks%n",
+				probes == 0 ? 0.0 : totalNearest / probes);
+		System.out.printf("    monotonic          %s, %d violations, worst rise %.2f blocks%n",
+				network.monotonic() ? "YES" : "NO", network.monotonicViolations(),
+				network.worstRise());
+
+		printTrunkTransect(network, settings, orders, channelLength);
+	}
+
+	/**
+	 * Walks the main stem from headwater to mouth.
+	 *
+	 * <p>Follows the largest upstream branch at every junction, which is what "main
+	 * stem" means. Printed headwater first so the elevation column reads the way water
+	 * runs, and any rise in it is immediately visible as a number rather than having to
+	 * be inferred from a colour.
+	 */
+	private static void printTrunkTransect(
+			final BasinNetwork network, final DrainageSettings settings,
+			final int[] orders, final double channelLength) {
+		FlowLattice flow = network.lattice();
+
+		int mouth = 0;
+		double most = -1.0;
+
+		for (int i = 0; i < flow.size(); i++) {
+			if (flow.accumulated(i) > most) {
+				most = flow.accumulated(i);
+				mouth = i;
+			}
+		}
+
+		int[] upstream = new int[flow.size()];
+		double[] bestFlow = new double[flow.size()];
+		java.util.Arrays.fill(upstream, -1);
+
+		for (int i = 0; i < flow.size(); i++) {
+			int next = flow.downstream(i);
+
+			if (next >= 0 && flow.accumulated(i) > bestFlow[next]) {
+				bestFlow[next] = flow.accumulated(i);
+				upstream[next] = i;
+			}
+		}
+
+		java.util.List<Integer> stem = new java.util.ArrayList<>();
+
+		for (int i = mouth; i >= 0 && stem.size() < 4_000; i = upstream[i]) {
+			stem.add(i);
+		}
+
+		java.util.Collections.reverse(stem);
+
+		System.out.println();
+		System.out.printf("    MAIN STEM, %d stations from headwater to mouth%n", stem.size());
+		System.out.println("      station    x         z        filled  surface  discharge   drop");
+
+		int stride = Math.max(1, stem.size() / 16);
+		double previous = Double.NaN;
+
+		for (int n = 0; n < stem.size(); n += stride) {
+			int i = stem.get(n);
+			double filled = flow.filled(i);
+			double drop = Double.isNaN(previous) ? 0.0 : previous - filled;
+			previous = filled;
+
+			System.out.printf("      %7d  %,9.0f %,9.0f  %7.1f  %7.1f  %9.4f  %6.1f%s%n",
+					n, flow.worldX(flow.cellX(i)), flow.worldZ(flow.cellZ(i)),
+					filled, flow.surface(i), flow.accumulated(i), drop,
+					drop < -0.001 ? "  *** RISES" : "");
+		}
+	}
+
+	/**
+	 * The units precipitation and evaporation actually come in.
+	 *
+	 * <p>Sizing an evaporation term against the wrong quantity is how
+	 * {@code convergenceRainFactor} ended up 17 times too large and left the equator at
+	 * 2 percent humidity. Saturation is 1.0 at the 15 degree reference and exponential
+	 * from there, while precipitation runs in hundredths. They are not comparable and
+	 * the factor between them has to be measured, not assumed.
+	 *
+	 * <p>Calibrated against a real number: over Earth's land, roughly 35 percent of
+	 * precipitation becomes runoff and the rest returns to the air. That is the figure
+	 * the potential-evaporation scale is chosen to reproduce.
+	 */
+	private static void printWaterBalance(final TerrainModel.Snapshot world) {
+		MoistureField moisture = world.moisture().gating();
+		HeightField terrain = world.terrain();
+
+		int grid = 60;
+		double span = 400_000.0;
+		double step = span / grid;
+
+		double totalRain = 0.0;
+		double totalDeficit = 0.0;
+		double maxRain = 0.0;
+		double maxDeficit = 0.0;
+		int land = 0;
+
+		for (int iz = 0; iz < grid; iz++) {
+			for (int ix = 0; ix < grid; ix++) {
+				double worldX = -span * 0.5 + (ix + 0.5) * step;
+				double worldZ = -span * 0.5 + (iz + 0.5) * step;
+
+				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+					continue;
+				}
+
+				land++;
+
+				var air = moisture.at(worldX, worldZ);
+				double deficit = air.saturation() * (1.0 - air.humidity());
+
+				totalRain += air.precipitation();
+				totalDeficit += deficit;
+				maxRain = Math.max(maxRain, air.precipitation());
+				maxDeficit = Math.max(maxDeficit, deficit);
+			}
+		}
+
+		double meanRain = totalRain / land;
+		double meanDeficit = totalDeficit / land;
+
+		System.out.println();
+		System.out.printf("  WATER BALANCE, over %,d land samples%n", land);
+		System.out.printf("    precipitation      mean %.5f, max %.5f%n", meanRain, maxRain);
+		System.out.printf("    vapour deficit     mean %.5f, max %.5f%n", meanDeficit, maxDeficit);
+		System.out.printf("    ratio deficit/rain %.1fx%n", meanDeficit / meanRain);
+
+		// Turc-Pike: E = P / sqrt(1 + (P/PET)^2). Water-limited where PET dominates,
+		// energy-limited where rain does, with no discontinuity between the two.
+		for (double scale : new double[] {0.005, 0.01, 0.02, 0.04, 0.08}) {
+			double runoff = 0.0;
+			double rain = 0.0;
+			int producing = 0;
+
+			for (int iz = 0; iz < grid; iz++) {
+				for (int ix = 0; ix < grid; ix++) {
+					double worldX = -span * 0.5 + (ix + 0.5) * step;
+					double worldZ = -span * 0.5 + (iz + 0.5) * step;
+
+					if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+						continue;
+					}
+
+					var air = moisture.at(worldX, worldZ);
+					double potential = scale * air.saturation() * (1.0 - air.humidity());
+					double p = air.precipitation();
+					double evaporated = potential <= 0.0 ? 0.0
+							: p / Math.sqrt(1.0 + (p / potential) * (p / potential));
+
+					rain += p;
+					runoff += p - evaporated;
+
+					if (p - evaporated > p * 0.05) {
+						producing++;
+					}
+				}
+			}
+
+			System.out.printf("    PET scale %.3f  ->  runoff %.1f%% of rain, "
+					+ "%.0f%% of land producing   [Earth: 35%%]%n",
+					scale, 100.0 * runoff / rain, 100.0 * producing / land);
+		}
 	}
 
 	/**

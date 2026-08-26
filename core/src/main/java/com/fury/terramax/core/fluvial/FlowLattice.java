@@ -135,6 +135,18 @@ public final class FlowLattice {
 		return processOrder;
 	}
 
+	/**
+	 * How many cells the flood actually reached.
+	 *
+	 * <p>Should equal {@link #size()}: every cell is connected to the lattice edge
+	 * through the grid, and the edge is always seeded. Anything less means cells whose
+	 * runoff never entered the accumulation at all, so it is worth being able to check
+	 * rather than assume.
+	 */
+	public int processed() {
+		return processed;
+	}
+
 	public boolean isOutlet(final int i) {
 		return downstream[i] < 0;
 	}
@@ -252,14 +264,30 @@ public final class FlowLattice {
 		}
 	}
 
+	/** Accumulation with nothing lost along the way. */
+	public void accumulate(final IntToDoubleFunction gainAt) {
+		accumulate(gainAt, i -> 1.0);
+	}
+
 	/**
-	 * Pushes weights downstream and leaves the running total in {@code accumulated}.
+	 * Pushes flow downstream, gaining locally and losing along the way.
 	 *
-	 * <p>Weight may be negative, which is how a river loses more to evaporation than
-	 * it gains from rain while crossing a desert. The total clamps at zero, so a river
-	 * can die in sand rather than going negative, which is a real thing rivers do.
+	 * <p>Two terms rather than one, because a cell does two different things to a
+	 * river. It <b>adds</b> its own runoff, which is rainfall minus what evaporates
+	 * before it can leave. That can be nearly nothing in a desert but is never
+	 * negative: dry ground contributes no water, it does not consume the sky's.
+	 *
+	 * <p>It also <b>takes</b> from whatever is already passing through, because a
+	 * channel crossing dry air loses water over its whole length. That is a
+	 * multiplicative loss on the inherited total, not a subtraction from the local
+	 * gain, and the distinction is what lets a river arrive large, cross a desert and
+	 * die there. Subtracting a local term instead would let a small headwater go
+	 * negative in the same air, which is not a thing that happens.
+	 *
+	 * @param gainAt      runoff produced by this cell, at or above zero
+	 * @param retentionAt share of inherited flow surviving this cell, above 0 up to 1
 	 */
-	public void accumulate(final IntToDoubleFunction weightAt) {
+	public void accumulate(final IntToDoubleFunction gainAt, final IntToDoubleFunction retentionAt) {
 		java.util.Arrays.fill(accumulated, 0.0);
 
 		// Reverse pop order is a valid topological order. Pop order is nondecreasing
@@ -268,7 +296,8 @@ public final class FlowLattice {
 		// before the cell it drains into.
 		for (int rank = processed - 1; rank >= 0; rank--) {
 			int i = processOrder[rank];
-			double total = Math.max(0.0, accumulated[i] + weightAt.applyAsDouble(i));
+			double total = Math.max(0.0,
+					accumulated[i] * retentionAt.applyAsDouble(i) + gainAt.applyAsDouble(i));
 			accumulated[i] = total;
 
 			int next = downstream[i];

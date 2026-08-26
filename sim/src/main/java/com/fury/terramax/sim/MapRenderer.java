@@ -239,6 +239,33 @@ public final class MapRenderer {
 		 */
 		BASIN_ID,
 
+		/**
+		 * Channels drawn as lines, thickened and brightened by Strahler order.
+		 *
+		 * <p>The payoff render for the whole subsystem, and the one that answers
+		 * questions statistics cannot: whether the network is dendritic, whether
+		 * tributaries join facing downstream, whether trunks sit in valleys rather
+		 * than on ridges, and whether anything crosses anything else.
+		 */
+		DRAINAGE,
+
+		/**
+		 * Accumulated discharge on a logarithmic ramp.
+		 *
+		 * <p>Logarithmic because discharge is a power law. On a linear ramp one trunk
+		 * would be visible and every tributary in the world would be black.
+		 */
+		DISCHARGE,
+
+		/**
+		 * Hillslope position: dark on channels, bright on divides.
+		 *
+		 * <p>Makes the divide network visible although no divide is ever built. The
+		 * bright ridgelines here should coincide with ridges in the elevation render;
+		 * if they do not, the two-nearest search is finding the wrong channels.
+		 */
+		HILLSLOPE,
+
 		/** Temperature in degrees C, cold blue through white to hot red. */
 		TEMPERATURE,
 
@@ -481,6 +508,9 @@ public final class MapRenderer {
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
 			case BASIN_ID -> basinIdColour(world.basins(), field, worldX, worldZ, seaLevel);
+			case DRAINAGE -> drainageColour(world, field, worldX, worldZ, minY, maxY, seaLevel);
+			case DISCHARGE -> dischargeColour(world, field, worldX, worldZ, seaLevel);
+			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel);
 			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
@@ -506,6 +536,71 @@ public final class MapRenderer {
 	 * itself and colouring them would fill the render with per-pixel confetti that
 	 * hides the thing being looked at.
 	 */
+	/** Half-width in blocks of a drawn channel, by Strahler order. */
+	private static double channelHalfWidth(final int order, final double blocksPerPixel) {
+		// At least a pixel wide, or a continental view shows nothing at all, and wider
+		// with order so a trunk reads as a trunk.
+		return Math.max(blocksPerPixel * 0.7, 60.0 * Math.pow(1.5, Math.max(0, order - 1)));
+	}
+
+	private static int drainageColour(
+			final TerrainModel.Snapshot world, final HeightField field,
+			final double worldX, final double worldZ,
+			final int minY, final int maxY, final int seaLevel) {
+		double height = field.heightAt(worldX, worldZ);
+
+		if (height <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		var drain = world.drainage().sample(worldX, worldZ);
+		double halfWidth = channelHalfWidth(drain.order(), 1.0);
+
+		if (drain.hasChannel() && drain.distance() <= halfWidth) {
+			float depth = (float) Math.min(1.0, 0.35 + 0.15 * drain.order());
+
+			return new Color(0.1f, 0.45f * depth, 0.95f * depth).getRGB();
+		}
+
+		// Ground behind the channels, dimmed so the network reads on top of it.
+		Color ground = rawColour(height, minY, maxY);
+
+		return new Color(
+				ground.getRed() / 3, ground.getGreen() / 3, ground.getBlue() / 3).getRGB();
+	}
+
+	private static int dischargeColour(
+			final TerrainModel.Snapshot world, final HeightField field,
+			final double worldX, final double worldZ, final int seaLevel) {
+		if (field.heightAt(worldX, worldZ) <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		var drain = world.drainage().sample(worldX, worldZ);
+
+		if (!drain.hasChannel()) {
+			return Color.BLACK.getRGB();
+		}
+
+		// Logarithmic, because discharge is a power law and a linear ramp would show
+		// one trunk against black everywhere else.
+		double scaled = Math.log1p(drain.discharge() * 1_000.0) / Math.log1p(1_000.0);
+
+		return rampColour(MAGMA_RAMP, scaled).getRGB();
+	}
+
+	private static int hillslopeColour(
+			final TerrainModel.Snapshot world, final HeightField field,
+			final double worldX, final double worldZ, final int seaLevel) {
+		if (field.heightAt(worldX, worldZ) <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		float t = (float) world.drainage().sample(worldX, worldZ).hillslope();
+
+		return new Color(t, t, t).getRGB();
+	}
+
 	private static int basinIdColour(
 			final BasinIndex basins, final HeightField field,
 			final double worldX, final double worldZ, final int seaLevel) {
