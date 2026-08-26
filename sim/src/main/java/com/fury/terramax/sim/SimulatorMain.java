@@ -145,6 +145,8 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.LIFE_ZONE);
 		writeTerrain("wind-continental", continental, world,
 				MapRenderer.TerrainLayer.WIND);
+		writeTerrain("wind-local", local, world,
+				MapRenderer.TerrainLayer.WIND);
 		writeTerrain("wind-planetary", planetary, world,
 				MapRenderer.TerrainLayer.WIND);
 		writeTerrain("life-zone-planetary", planetary, world,

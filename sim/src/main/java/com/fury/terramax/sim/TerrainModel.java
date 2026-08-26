@@ -6,8 +6,10 @@ import com.fury.terramax.core.climate.TemperatureField;
 import com.fury.terramax.core.climate.WindField;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateMapSettings;
+import com.fury.terramax.core.region.RegionClimate;
 import com.fury.terramax.core.region.RegionMap;
 import com.fury.terramax.core.region.RegionSettings;
+import com.fury.terramax.core.terrain.TectonicHeight;
 import com.fury.terramax.core.terrain.TerrainHeight;
 import com.fury.terramax.core.terrain.TerrainSettings;
 
@@ -28,6 +30,19 @@ import com.fury.terramax.core.terrain.TerrainSettings;
  * settings object would leave that calibration stale and silently wrong.
  */
 public final class TerrainModel {
+	/**
+	 * Rain at or below which the ground counts as fully arid.
+	 *
+	 * <p>Both thresholds are read off the climate transect rather than chosen. The
+	 * subtropical dry belt sits at or near zero and a wet windward slope reaches past
+	 * 0.02, so this pair spans the range that actually occurs and puts the mixed band
+	 * where most of the world is not.
+	 */
+	private static final double DRY_RAIN_RATE = 0.002;
+
+	/** Rain at or above which the ground counts as fully humid. */
+	private static final double WET_RAIN_RATE = 0.014;
+
 	private long seed;
 	private PlateMapSettings plateSettings;
 	private RegionSettings regionSettings;
@@ -118,23 +133,36 @@ public final class TerrainModel {
 		rebuild();
 	}
 
+	/**
+	 * Builds the world in dependency order, which is also causal order.
+	 *
+	 * <p>Tectonics, then the climate they drive, then the regions that climate
+	 * decides, then the finished surface. Every arrow points one way. Wind and
+	 * moisture read {@link TectonicHeight} rather than the finished surface, which is
+	 * what keeps it that way once drainage lands: terrain will depend on rivers,
+	 * rivers on moisture, moisture on wind, and wind on terrain.
+	 */
 	private void rebuild() {
 		PlateMap plates = new PlateMap(seed, plateSettings);
-		RegionMap regions = new RegionMap(seed, regionSettings);
-
-		TerrainHeight terrain = new TerrainHeight(seed, plates, regions, terrainSettings);
+		TectonicHeight tectonic = new TectonicHeight(seed, plates, terrainSettings);
 
 		TemperatureField temperature = new TemperatureField(seed, climateSettings);
+		WindField wind = new WindField(climateSettings, tectonic);
 
-		// Wind reads the uplift layer, not the finished surface. That is what keeps
-		// the pipeline acyclic once drainage lands: terrain depends on rivers, rivers
-		// on moisture, moisture on wind, wind on terrain.
-		WindField wind = new WindField(climateSettings, terrain::upliftAt);
+		MoistureScale moisture = new MoistureScale(
+				climateSettings, moistureSettings, temperature, wind,
+				tectonic, plateSettings.seaLevel());
+
+		// Regions are gated on how much rain actually reaches them, read from the
+		// coarse gating lattice. Fixed, never view-dependent: what the ground is made
+		// of must not change according to how far the simulator is zoomed out.
+		RegionMap regions = new RegionMap(seed, regionSettings,
+				RegionClimate.fromPrecipitation(
+						moisture.gating(), DRY_RAIN_RATE, WET_RAIN_RATE));
 
 		this.snapshot = new Snapshot(
-				plates, regions, terrain, temperature, wind,
-				new MoistureScale(
-						climateSettings, moistureSettings, temperature, wind,
-						terrain::upliftAt, plateSettings.seaLevel()));
+				plates, regions,
+				new TerrainHeight(seed, tectonic, regions, terrainSettings),
+				temperature, wind, moisture);
 	}
 }

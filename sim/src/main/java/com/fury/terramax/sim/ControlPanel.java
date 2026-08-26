@@ -180,7 +180,8 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					regions(r -> new RegionSettings(
 							value, r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction()));
+							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
+							r.provinceWavelengthBlocks(), r.provinceWeight()));
 
 					return String.format("%,d blocks", value);
 				}));
@@ -190,9 +191,36 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					regions(r -> new RegionSettings(
 							r.spacingBlocks(), r.jitter(), value,
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction()));
+							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
+							r.provinceWavelengthBlocks(), r.provinceWeight()));
 
 					return String.format("%,d blocks", value);
+				}));
+
+		group.addControl(slider("province scale", 2_000, 120_000,
+				(int) model.regionSettings().provinceWavelengthBlocks(),
+				value -> {
+					regions(r -> new RegionSettings(
+							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
+							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
+							value, r.provinceWeight()));
+
+					return String.format("%,d blocks (%.0f regions)",
+							value, value / model.regionSettings().spacingBlocks());
+				}));
+
+		group.addControl(slider("province weight", 0, 100,
+				(int) Math.round(model.regionSettings().provinceWeight() * PERCENT_SCALE),
+				value -> {
+					double share = value / (double) PERCENT_SCALE;
+
+					regions(r -> new RegionSettings(
+							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
+							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
+							r.provinceWavelengthBlocks(), share));
+
+					return String.format("%.0f%% province, %.0f%% own roll",
+							share * 100.0, (1.0 - share) * 100.0);
 				}));
 
 		group.addControl(slider("edge blend", 0, 50,
@@ -202,7 +230,8 @@ public final class ControlPanel extends JPanel {
 
 					regions(r -> new RegionSettings(
 							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), fraction));
+							r.warpWavelengthFactor(), r.warpOctaves(), fraction,
+							r.provinceWavelengthBlocks(), r.provinceWeight()));
 
 					return String.format("%.2fx spacing (%,.0f blocks)",
 							fraction, model.regionSettings().spacingBlocks() * fraction);

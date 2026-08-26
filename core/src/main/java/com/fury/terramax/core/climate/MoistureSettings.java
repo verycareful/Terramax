@@ -9,6 +9,8 @@ package com.fury.terramax.core.climate;
  * would make both harder to read.
  *
  * @param latticeSpacingBlocks   spacing of the grid moisture is solved on
+ * @param gatingLatticeBlocks    spacing of the far coarser grid that decides which
+ *                               landforms a part of the world can carry
  * @param trajectorySteps        how many steps a back-trajectory takes
  * @param firstStepBlocks        the step nearest the query, as blocks of travel at
  *                               full wind speed
@@ -32,6 +34,7 @@ package com.fury.terramax.core.climate;
  */
 public record MoistureSettings(
 		double latticeSpacingBlocks,
+		double gatingLatticeBlocks,
 		int trajectorySteps,
 		double firstStepBlocks,
 		double stepGrowth,
@@ -96,10 +99,25 @@ public record MoistureSettings(
 	 * <p>{@code latticeSpacingBlocks} of 512 is far finer than moisture varies, which
 	 * is the point: it is fine enough that interpolating between nodes is invisible,
 	 * and coarse enough that a chunk costs a fraction of one trace.
+	 *
+	 * <p><b>{@code gatingLatticeBlocks} is thirty-two times coarser, and that is not a
+	 * concession.</b> Deciding whether a region can carry a mesa or must be rolling
+	 * hills is a question about which climate province the region sits in, and a
+	 * province is tens of thousands of blocks across. Answering it on the display
+	 * lattice would resolve individual slopes, which is precision the question does
+	 * not have: neighbouring regions would draw different climates and the patchwork
+	 * this gate exists to remove would come straight back in a new form.
+	 *
+	 * <p>It is also what makes the gate affordable. Regions sit 2,300 apart, so a
+	 * continental view holds about 133,000 of them; gating each against the 512
+	 * lattice is roughly half a million trajectories, near an hour on one core. At
+	 * 16,384 it is a few thousand. The game never noticed either way, because a chunk
+	 * shares its nodes with twenty thousand neighbours, but the simulator sweeps whole
+	 * continents in one go and does notice.
 	 */
 	public static MoistureSettings defaults() {
 		return new MoistureSettings(
-				512.0, 40, 600.0, 1.09,
+				512.0, 16_384.0, 40, 600.0, 1.09,
 				15.0, 10.5,
 				25_000.0, 0.12,
 				0.55, 25.0, 25_000.0,
@@ -112,7 +130,7 @@ public record MoistureSettings(
 	/** The same model solved on a coarser grid, for views too wide to solve at 512. */
 	public MoistureSettings withLatticeSpacing(final double blocks) {
 		return new MoistureSettings(
-				blocks, trajectorySteps, firstStepBlocks, stepGrowth,
+				blocks, gatingLatticeBlocks, trajectorySteps, firstStepBlocks, stepGrowth,
 				referenceTemperature, saturationDoubling,
 				evaporationLengthBlocks, landEvaporationFraction,
 				condensationEfficiency, latentHeatCelsius, thermalRelaxationBlocks,

@@ -9,6 +9,9 @@ package com.fury.terramax.core.region;
  * @param warpWavelengthFactor displacement field wavelength, in region spacings
  * @param warpOctaves          detail in the displacement field
  * @param blendFraction        region blend width as a fraction of spacing
+ * @param provinceWavelengthBlocks scale over which regions of a type share a level
+ * @param provinceWeight       share of a region's height taken from the province
+ *                             field rather than from its own roll, in [0, 1]
  */
 public record RegionSettings(
 		double spacingBlocks,
@@ -16,7 +19,9 @@ public record RegionSettings(
 		double warpStrengthBlocks,
 		double warpWavelengthFactor,
 		int warpOctaves,
-		double blendFraction) {
+		double blendFraction,
+		double provinceWavelengthBlocks,
+		double provinceWeight) {
 
 	public double warpWavelengthBlocks() {
 		return spacingBlocks * warpWavelengthFactor;
@@ -46,8 +51,14 @@ public record RegionSettings(
 	 * <p>{@code blendFraction} 0.22 leaves roughly half of each region at its own
 	 * full height with the rest transitioning. Larger and regions lose their
 	 * identity; smaller and the edges read as steps.
+	 *
+	 * <p>{@code provinceWavelengthBlocks} 25,000 is about ten regions across, so a
+	 * province holds a coherent group rather than a single region or a continent. At
+	 * 0.75 the province decides most of a region's height and its own roll decides the
+	 * rest, which keeps a plateau province recognisably one surface without flattening
+	 * it into a single table.
 	 */
 	public static RegionSettings defaults() {
-		return new RegionSettings(2_300.0, 0.4, 1_600.0, 2.0, 3, 0.22);
+		return new RegionSettings(2_300.0, 0.4, 1_600.0, 2.0, 3, 0.22, 25_000.0, 0.75);
 	}
 }

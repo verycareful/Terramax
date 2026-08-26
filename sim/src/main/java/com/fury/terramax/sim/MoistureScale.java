@@ -63,6 +63,17 @@ public final class MoistureScale {
 		return atLattice(base.latticeSpacingBlocks());
 	}
 
+	/**
+	 * The coarse lattice region gating is solved on.
+	 *
+	 * <p>Fixed, never view-dependent. What the ground is made of must not change
+	 * according to how far the simulator happens to be zoomed out, so this cannot go
+	 * through {@link #forResolution}.
+	 */
+	public MoistureField gating() {
+		return atLattice(base.gatingLatticeBlocks());
+	}
+
 	/** The finest lattice worth solving for a view at this resolution. */
 	public MoistureField forResolution(final double blocksPerPixel) {
 		return atLattice(latticeFor(blocksPerPixel));
