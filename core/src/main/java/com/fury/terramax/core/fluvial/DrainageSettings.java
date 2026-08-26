@@ -49,6 +49,21 @@ package com.fury.terramax.core.fluvial;
  * incision, and those are the basins the design is after: Caspian, Tarim, Great Basin,
  * Lake Eyre.
  *
+ * <p><b>{@code bifurcationRatio} is children attempted, not the ratio that results.</b>
+ * A creek stops where it meets the uplift budget, and a branch spawned further up a
+ * hillside has less room left to climb, so deeper branches die more often than shallow
+ * ones. Attempting Horton's 4 therefore measured 1.88 on the network that survived.
+ * Attempting 8 measures 3.85, which is Horton's number where it is actually observable:
+ * on the ground.
+ *
+ * <p><b>{@code gradientScale} has to stay below the hillslope gradient.</b> A creek
+ * climbs at this rate and terminates where it meets the budget, so a value steeper than
+ * the hill it is climbing kills every creek at its first step. This world's hillslopes
+ * rise at roughly 0.017 and the first value tried was 0.06, which is why creeks
+ * contributed almost nothing. That constraint is also physically right: a channel is
+ * always less steep than the slopes flanking it, which is what makes it a valley.
+ * Swept, 0.002 to 0.010 all put channel spacing inside the target band.
+ *
  * <p>Five values here have no defensible starting guess and are found in the simulator
  * against the drainage statistics: {@code gradientScale},
  * {@code floodplainWidthFactor}, {@code hillslopeExponent},
@@ -63,13 +78,13 @@ package com.fury.terramax.core.fluvial;
  * @param channelSpacingTargetBlocks tier 2 channel density, set by quantile not constant
  * @param creekSpacingBlocks         tier 3 target spacing between headwater creeks
  * @param creekLevels                tier 3 recursion depth
- * @param bifurcationRatio           children per tier 3 node; Horton's is near 4
+ * @param bifurcationRatio           children <i>attempted</i> per tier 3 branch; see the note above
  * @param lengthRatio                how much shorter each tier 3 level is; Horton's is near 2
  * @param junctionAngleMinDegrees    narrowest tributary junction, facing upstream
  * @param junctionAngleMaxDegrees    widest tributary junction
  * @param hackExponent               exponent in Hack's law, length against area
  * @param slopeAreaExponent          exponent in the slope-area relation; makes headwaters steep
- * @param gradientScale              constant in the slope-area relation
+ * @param gradientScale              constant in the slope-area relation; must stay under the hillslope gradient
  * @param floodplainWidthFactor      how far a floodplain reaches toward the divide, per unit discharge
  * @param hillslopeExponent          skew on the channel-to-divide profile; 1.0 is pure smoothstep
  * @param detailFloorFraction        detail amplitude at a channel, as a share of its amplitude at a divide
@@ -126,13 +141,13 @@ public record DrainageSettings(
 				6_000.0,      // channelSpacingTargetBlocks
 				2_000.0,      // creekSpacingBlocks
 				3,            // creekLevels
-				4.0,          // bifurcationRatio
+				8.0,          // bifurcationRatio
 				2.0,          // lengthRatio
 				45.0,         // junctionAngleMinDegrees
 				75.0,         // junctionAngleMaxDegrees
 				0.57,         // hackExponent
 				0.5,          // slopeAreaExponent
-				0.06,         // gradientScale
+				0.010,        // gradientScale
 				0.35,         // floodplainWidthFactor
 				1.0,          // hillslopeExponent
 				0.15,         // detailFloorFraction

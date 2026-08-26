@@ -79,7 +79,8 @@ public final class TerrainModel {
 	public record Snapshot(
 			PlateMap plates, RegionMap regions, TerrainHeight terrain,
 			TemperatureField temperature, WindField wind, MoistureScale moisture,
-			UpliftHeight uplift, BasinIndex basins, DrainageMap drainage) {
+			UpliftHeight uplift, BasinIndex basins, DrainageMap drainage,
+			long seedForCreeks) {
 	}
 
 	public Snapshot snapshot() {
@@ -185,11 +186,11 @@ public final class TerrainModel {
 		// plateau does redirect a river, and the coarse gating moisture, because
 		// precipitation varies over tens of thousands of blocks.
 		DrainageMap drainage = new DrainageMap(
-				uplift, moisture.gating(), basins, drainageSettings);
+				seed, uplift, moisture.gating(), basins, drainageSettings);
 
 		this.snapshot = new Snapshot(
 				plates, regions,
 				new TerrainHeight(seed, uplift, terrainSettings),
-				temperature, wind, moisture, uplift, basins, drainage);
+				temperature, wind, moisture, uplift, basins, drainage, seed);
 	}
 }

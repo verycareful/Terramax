@@ -22,6 +22,7 @@ public final class DrainageMap {
 	private final MoistureField moisture;
 	private final BasinIndex basins;
 	private final DrainageSettings settings;
+	private final CreekTrees creeks;
 
 	/**
 	 * Basin solves, guarded so only one thread builds any given basin.
@@ -41,12 +42,17 @@ public final class DrainageMap {
 			ThreadLocal.withInitial(BasinNetwork.Nearest::new);
 
 	public DrainageMap(
-			final HeightField uplift, final MoistureField moisture,
+			final long seed, final HeightField uplift, final MoistureField moisture,
 			final BasinIndex basins, final DrainageSettings settings) {
 		this.uplift = uplift;
 		this.moisture = moisture;
 		this.basins = basins;
 		this.settings = settings;
+		this.creeks = new CreekTrees(seed, uplift, settings);
+	}
+
+	public CreekTrees creeks() {
+		return creeks;
 	}
 
 	public DrainageSettings settings() {
@@ -96,12 +102,24 @@ public final class DrainageMap {
 		}
 	}
 
-	/** Everything the carve needs to know about drainage at one column. */
+	/**
+	 * Everything the carve needs to know about drainage at one column.
+	 *
+	 * <p>Both tiers feed one search rather than being merged afterwards. That matters
+	 * for the divide: standing between a trunk and one of its own creeks, the two
+	 * nearest streams come from different tiers, and searching them separately would
+	 * never see that pair.
+	 */
 	public DrainageSample sample(final double worldX, final double worldZ) {
 		BasinNetwork network = networkAt(worldX, worldZ);
 		BasinNetwork.Nearest nearest = scratch.get();
 
-		network.nearestTwo(worldX, worldZ, nearest);
+		nearest.reset();
+		nearest.fallbackHalfSpacing(settings.creekSpacingBlocks() * 0.5);
+
+		network.offerNear(worldX, worldZ, nearest);
+		creeks.patchAt(worldX, worldZ, network)
+				.mergeNearest(worldX, worldZ, network.streamCount(), nearest);
 
 		if (!nearest.found()) {
 			double budget = uplift.heightAt(worldX, worldZ);

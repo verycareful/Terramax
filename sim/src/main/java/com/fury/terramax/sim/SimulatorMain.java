@@ -11,6 +11,7 @@ import javax.imageio.ImageIO;
 import com.fury.terramax.core.climate.MoistureField;
 import com.fury.terramax.core.fluvial.BasinIndex;
 import com.fury.terramax.core.fluvial.BasinNetwork;
+import com.fury.terramax.core.fluvial.CreekTrees;
 import com.fury.terramax.core.fluvial.DrainageSettings;
 import com.fury.terramax.core.fluvial.FlowLattice;
 import com.fury.terramax.core.plate.CrustType;
@@ -928,7 +929,160 @@ public final class SimulatorMain {
 					swept.terminalLakeCount(), 100.0 * swept.playaAreaShare());
 		}
 
+		printCreekStatistics(world, network, settings);
+		printGradientSweep(world, network, settings);
 		printTrunkTransect(network, settings, orders, channelLength);
+	}
+
+	/**
+	 * Measures the creek trees against the statistics they were generated to carry.
+	 *
+	 * <p><b>Asking for a target and never checking the result is how the region weights
+	 * came to produce zero inselberg plains.</b> The whole argument for synthesising
+	 * creeks rather than routing them was that a tree carrying real Hortonian statistics
+	 * is more faithful at this scale than routing over noise. That argument is only worth
+	 * anything if the statistics actually come out where they were asked to.
+	 */
+	private static void printCreekStatistics(
+			final TerrainModel.Snapshot world, final BasinNetwork network,
+			final DrainageSettings settings) {
+		FlowLattice flow = network.lattice();
+
+		int patches = 0;
+		int segments = 0;
+		int branches = 0;
+		int junctions = 0;
+		int[] perLevel = new int[16];
+		double creekLength = 0.0;
+		double lengthSum = 0.0;
+		double areaSum = 0.0;
+
+		double spanX = flow.width() * flow.spacing();
+		double spanZ = flow.depth() * flow.spacing();
+
+		for (double z = flow.originZ(); z < flow.originZ() + spanZ; z += 8_000.0) {
+			for (double x = flow.originX(); x < flow.originX() + spanX; x += 8_000.0) {
+				var patch = world.drainage().creeks().patchAt(x, z, network);
+
+				patches++;
+				segments += patch.segmentCount();
+				branches += patch.branchCount();
+				junctions += patch.junctionCount();
+				creekLength += patch.totalLength();
+				lengthSum += patch.meanBranchLength() * patch.branchCount();
+				areaSum += patch.meanBranchArea() * patch.branchCount();
+
+				int[] levels = patch.branchesPerLevel();
+
+				for (int level = 0; level < perLevel.length; level++) {
+					perLevel[level] += levels[level];
+				}
+			}
+		}
+
+		double landArea = network.landCells() * flow.spacing() * flow.spacing();
+		double trunkLength = 0.0;
+
+		// Combined spacing: area over the total length of everything that carries water,
+		// trunks and creeks together, which is what a player actually walks between.
+		trunkLength = landArea / network.channelSpacing();
+
+		double combined = creekLength + trunkLength <= 0.0
+				? 0.0 : landArea / (creekLength + trunkLength);
+
+		System.out.println();
+		System.out.printf("    TIER 3, %d patches%n", patches);
+		System.out.printf("      creek segments   %,d, %,d branches, %,d junctions%n",
+				segments, branches, junctions);
+		System.out.printf("      bifurcation      %.2f realised from %.0f attempted   [Horton 4]   levels %s%n",
+				bifurcation(perLevel), settings.bifurcationRatio(),
+				java.util.Arrays.toString(java.util.Arrays.copyOf(perLevel,
+						settings.creekLevels() + 1)));
+		System.out.printf("      mean branch      %,.0f blocks over area %.4f%n",
+				branches == 0 ? 0.0 : lengthSum / branches,
+				branches == 0 ? 0.0 : areaSum / branches);
+		System.out.printf("      channel spacing  %,.0f blocks with creeks, %,.0f without"
+				+ "   [target 1,500 to 3,000]%n",
+				combined, network.channelSpacing());
+	}
+
+	/**
+	 * Sweeps the creek gradient against the channel spacing it produces.
+	 *
+	 * <p><b>The gradient decides how far a creek gets before it dies.</b> A creek climbs
+	 * at this rate and stops where it meets the uplift budget, so a gradient steeper than
+	 * the hillslope it is climbing kills every creek at its first step. This world's
+	 * hillslopes rise at roughly 0.017, and the starting value of 0.06 was more than
+	 * three times that, which is why creeks contributed almost no length.
+	 */
+	private static void printGradientSweep(
+			final TerrainModel.Snapshot world, final BasinNetwork network,
+			final DrainageSettings settings) {
+		FlowLattice flow = network.lattice();
+		double landArea = network.landCells() * flow.spacing() * flow.spacing();
+		double trunkLength = landArea / network.channelSpacing();
+
+		System.out.println();
+		System.out.println("      creek gradient sweep   [target spacing 1,500 to 3,000]");
+
+		for (double gradient : new double[] {0.002, 0.005, 0.010, 0.020, 0.060}) {
+			DrainageSettings swept = withGradient(settings, gradient);
+			CreekTrees trees = new CreekTrees(world.seedForCreeks(), world.uplift(), swept);
+
+			double creekLength = 0.0;
+			int segments = 0;
+			double spanX = flow.width() * flow.spacing();
+			double spanZ = flow.depth() * flow.spacing();
+
+			for (double z = flow.originZ(); z < flow.originZ() + spanZ; z += 8_000.0) {
+				for (double x = flow.originX(); x < flow.originX() + spanX; x += 8_000.0) {
+					var patch = trees.patchAt(x, z, network);
+					creekLength += patch.totalLength();
+					segments += patch.segmentCount();
+				}
+			}
+
+			System.out.printf("        gradient %.3f  ->  spacing %,7.0f blocks, "
+					+ "%,8d creek segments%n",
+					gradient, landArea / (creekLength + trunkLength), segments);
+		}
+	}
+
+	private static DrainageSettings withGradient(
+			final DrainageSettings from, final double gradientScale) {
+		return new DrainageSettings(
+				from.provinceLatticeBlocks(), from.provinceTileBlocks(),
+				from.provinceMarginBlocks(), from.basinLatticeBlocks(),
+				from.baseLevelY(), from.channelSpacingTargetBlocks(),
+				from.creekSpacingBlocks(), from.creekLevels(),
+				from.bifurcationRatio(), from.lengthRatio(),
+				from.junctionAngleMinDegrees(), from.junctionAngleMaxDegrees(),
+				from.hackExponent(), from.slopeAreaExponent(),
+				gradientScale, from.floodplainWidthFactor(),
+				from.hillslopeExponent(), from.detailFloorFraction(),
+				from.evaporationFactor(), from.closedBasinMinDepthBlocks(),
+				from.bucketSizeBlocks(), from.basinCacheLimit(), from.creekCacheLimit());
+	}
+
+	/**
+	 * Horton's bifurcation ratio, measured off the generated tree.
+	 *
+	 * <p>The mean ratio between the count of branches at one level and the count at the
+	 * next level up. Levels with too few branches to be meaningful are skipped rather
+	 * than allowed to drag the mean around.
+	 */
+	private static double bifurcation(final int[] perLevel) {
+		double total = 0.0;
+		int pairs = 0;
+
+		for (int level = 0; level + 1 < perLevel.length; level++) {
+			if (perLevel[level] >= 4 && perLevel[level + 1] >= 1) {
+				total += (double) perLevel[level] / perLevel[level + 1];
+				pairs++;
+			}
+		}
+
+		return pairs == 0 ? 0.0 : total / pairs;
 	}
 
 	/**

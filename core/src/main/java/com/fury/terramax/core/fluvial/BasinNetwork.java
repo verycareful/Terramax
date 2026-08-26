@@ -1049,7 +1049,16 @@ public final class BasinNetwork {
 	public void nearestTwo(final double worldX, final double worldZ, final Nearest out) {
 		out.reset();
 		out.fallbackHalfSpacing(settings.channelSpacingTargetBlocks() * 0.5);
+		offerNear(worldX, worldZ, out);
+	}
 
+	/**
+	 * Offers this basin's channels into a result the caller already owns.
+	 *
+	 * <p>Separate from {@link #nearestTwo} so tier 3 can add its creeks to the same
+	 * search rather than running its own and merging the answers.
+	 */
+	public void offerNear(final double worldX, final double worldZ, final Nearest out) {
 		if (segments == 0) {
 			return;
 		}
@@ -1104,28 +1113,64 @@ public final class BasinNetwork {
 
 		double nearestX = segX0[s] + dx * t;
 		double nearestZ = segZ0[s] + dz * t;
-		double distance = Math.hypot(worldX - nearestX, worldZ - nearestZ);
 
-		int stream = segStream[s];
+		out.offer(
+				Math.hypot(worldX - nearestX, worldZ - nearestZ),
+				segStream[s],
+				segE0[s] + (segE1[s] - segE0[s]) * t,
+				segDischarge[s],
+				segOrder[s]);
+	}
 
-		if (distance < out.distance1) {
-			// Only demote the old best into second place when it belongs to a
-			// different stream. Otherwise the second distance would just be the next
-			// segment of the same river, which says nothing about where the divide is.
-			if (stream != out.stream1) {
-				out.distance2 = out.distance1;
-				out.stream2 = out.stream1;
-			}
+	/** How many distinct streams this basin holds, so tier 3 can number past them. */
+	public int streamCount() {
+		int highest = -1;
 
-			out.distance1 = distance;
-			out.stream1 = stream;
-			out.elevation1 = segE0[s] + (segE1[s] - segE0[s]) * t;
-			out.discharge1 = segDischarge[s];
-			out.order1 = segOrder[s];
-		} else if (stream != out.stream1 && distance < out.distance2) {
-			out.distance2 = distance;
-			out.stream2 = stream;
+		for (int s = 0; s < segments; s++) {
+			highest = Math.max(highest, segStream[s]);
 		}
+
+		return highest + 1;
+	}
+
+	/**
+	 * Visits every channel segment overlapping a rectangle.
+	 *
+	 * <p>Tier 3 hangs its creeks off these, and needs a margin beyond the patch it is
+	 * building so a tributary reaching in from a trunk just outside still appears. The
+	 * bucket grid makes that a local walk rather than a scan of the whole basin.
+	 */
+	public void forEachSegmentNear(
+			final double minX, final double minZ, final double maxX, final double maxZ,
+			final SegmentVisitor visitor) {
+		int loX = bucketIndex(minX - originX, bucketsX);
+		int hiX = bucketIndex(maxX - originX, bucketsX);
+		int loZ = bucketIndex(minZ - originZ, bucketsZ);
+		int hiZ = bucketIndex(maxZ - originZ, bucketsZ);
+
+		boolean[] seen = new boolean[segments];
+
+		for (int bz = loZ; bz <= hiZ; bz++) {
+			for (int bx = loX; bx <= hiX; bx++) {
+				for (int s : buckets[bz * bucketsX + bx]) {
+					if (seen[s]) {
+						continue;
+					}
+
+					seen[s] = true;
+					visitor.accept(
+							segX0[s], segZ0[s], segX1[s], segZ1[s],
+							segE0[s], segE1[s], segDischarge[s], segOrder[s]);
+				}
+			}
+		}
+	}
+
+	/** Receives one channel segment. */
+	@FunctionalInterface
+	public interface SegmentVisitor {
+		void accept(double x0, double z0, double x1, double z1,
+				double e0, double e1, double discharge, int order);
 	}
 
 	/**
@@ -1161,8 +1206,41 @@ public final class BasinNetwork {
 			stream2 = -1;
 		}
 
-		void fallbackHalfSpacing(final double blocks) {
+		public void fallbackHalfSpacing(final double blocks) {
 			this.fallbackHalfSpacing = blocks;
+		}
+
+		/**
+		 * Offers one candidate channel, keeping the nearest two <i>distinct streams</i>.
+		 *
+		 * <p>Shared by both tiers on purpose, so a trunk and a creek compete on equal
+		 * terms and the divide falls out of whichever two streams are genuinely closest.
+		 * Running them separately and merging afterwards would lose the case that
+		 * matters most: standing between a river and its own tributary, where the two
+		 * nearest streams come from different tiers.
+		 *
+		 * <p>Only demotes the current best into second place when the newcomer belongs
+		 * to a different stream. Otherwise second place would fill with the next segment
+		 * of the same river, which says nothing about where a divide is.
+		 */
+		public void offer(
+				final double distance, final int stream,
+				final double elevation, final double flow, final int channelOrder) {
+			if (distance < distance1) {
+				if (stream != stream1) {
+					distance2 = distance1;
+					stream2 = stream1;
+				}
+
+				distance1 = distance;
+				stream1 = stream;
+				elevation1 = elevation;
+				discharge1 = flow;
+				order1 = channelOrder;
+			} else if (stream != stream1 && distance < distance2) {
+				distance2 = distance;
+				stream2 = stream;
+			}
 		}
 
 		public boolean found() {
