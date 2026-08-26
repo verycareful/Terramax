@@ -80,7 +80,33 @@ public final class TerrainModel {
 			PlateMap plates, RegionMap regions, TerrainHeight terrain,
 			TemperatureField temperature, WindField wind, MoistureScale moisture,
 			UpliftHeight uplift, BasinIndex basins, DrainageMap drainage,
-			long seedForCreeks) {
+			long seedForCreeks, TerrainHeight coarseTerrain) {
+
+		/**
+		 * The surface at a resolution suited to the view.
+		 *
+		 * <p>Wide views get a surface without tier 3 creeks, because a creek is a few
+		 * blocks across and a continental pixel is 820, so none of them can be drawn.
+		 * Building them anyway cost seven minutes for one render.
+		 *
+		 * <p>Exactly what {@code MoistureScale.forResolution} does, and for the same
+		 * reason. The world does not change; the question asked of it does.
+		 */
+		public TerrainHeight terrainFor(final double blocksPerPixel) {
+			return blocksPerPixel <= drainage.creekVisibleBelowBlocks() ? terrain : coarseTerrain;
+		}
+
+		/**
+		 * The surface without tier 3 creeks.
+		 *
+		 * <p>For anything that walks a wide area at coarse spacing: statistics grids,
+		 * feature searches, transects. Those step thousands of blocks between samples, so
+		 * a creek a few blocks wide cannot affect what they measure, but building every
+		 * creek they pass over dominates their cost.
+		 */
+		public TerrainHeight coarse() {
+			return coarseTerrain;
+		}
 	}
 
 	public Snapshot snapshot() {
@@ -190,7 +216,8 @@ public final class TerrainModel {
 
 		this.snapshot = new Snapshot(
 				plates, regions,
-				new TerrainHeight(seed, uplift, terrainSettings),
-				temperature, wind, moisture, uplift, basins, drainage, seed);
+				new TerrainHeight(seed, uplift, drainage, terrainSettings),
+				temperature, wind, moisture, uplift, basins, drainage, seed,
+				new TerrainHeight(seed, uplift, drainage, terrainSettings, false));
 	}
 }

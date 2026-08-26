@@ -110,6 +110,8 @@ public final class BasinNetwork {
 	private int playaCells;
 	private int terminalLakes;
 	private int closedDepressions;
+	private int terminalSinks;
+	private int landCells = -1;
 
 	public BasinNetwork(
 			final long outletKey, final HeightField uplift, final MoistureField moisture,
@@ -162,6 +164,26 @@ public final class BasinNetwork {
 		this.bucketsZ = Math.max(1, (int) Math.ceil(cellsZ * spacing / bucketSize));
 
 		buildChannels();
+		compact();
+	}
+
+	/**
+	 * Releases everything only construction needed.
+	 *
+	 * <p>A query wants the channel segments, their index, and the lake and endorheic
+	 * flags. It never wants the per-cell climate terms, the depression labelling or the
+	 * flood tree, and those are the bulk of a basin's memory. Dropping them is what lets
+	 * enough basins stay resident for a continental render to stop re-solving the same
+	 * ones over and over.
+	 */
+	private void compact() {
+		gain = null;
+		retention = null;
+		cellDeficit = null;
+		cellRain = null;
+		depressionId = null;
+		terminalSink = null;
+		flow.compact();
 	}
 
 	public long outletKey() {
@@ -215,15 +237,19 @@ public final class BasinNetwork {
 	}
 
 	public int landCells() {
-		int count = 0;
+		if (landCells < 0) {
+			int count = 0;
 
-		for (int i = 0; i < flow.size(); i++) {
-			if (flow.surface(i) > settings.baseLevelY()) {
-				count++;
+			for (int i = 0; i < flow.size(); i++) {
+				if (flow.surface(i) > settings.baseLevelY()) {
+					count++;
+				}
 			}
+
+			landCells = count;
 		}
 
-		return count;
+		return landCells;
 	}
 
 	/**
@@ -558,6 +584,7 @@ public final class BasinNetwork {
 
 				if (next < 0 || depressionId[next] != depressionId[i]) {
 					terminalSink[i] = true;
+					terminalSinks++;
 				}
 			}
 		}
@@ -680,17 +707,16 @@ public final class BasinNetwork {
 		return closedDepressions;
 	}
 
-	/** Cells where a closed basin breaks the chain to the sea. */
+	/**
+	 * Cells where a closed basin breaks the chain to the sea.
+	 *
+	 * <p>Counted while marking rather than by scanning afterwards, because the marks
+	 * themselves are released once the network is built. A diagnostic that reads freed
+	 * state is worse than no diagnostic: it throws in the one place someone is trying to
+	 * find out what went wrong.
+	 */
 	public int terminalSinkCount() {
-		int count = 0;
-
-		for (int i = 0; i < flow.size(); i++) {
-			if (terminalSink[i]) {
-				count++;
-			}
-		}
-
-		return count;
+		return terminalSinks;
 	}
 
 	public int endorheicCellCount() {
@@ -803,7 +829,7 @@ public final class BasinNetwork {
 		smoothPaths(channel, pointX, pointZ);
 		emitSegments(channel, order, stream, pointX, pointZ, channelCells);
 		indexSegments();
-		checkMonotonic();
+		checkMonotonic(channel);
 	}
 
 	/**
@@ -972,10 +998,20 @@ public final class BasinNetwork {
 			segX1[segments] = pointX[next];
 			segZ1[segments] = pointZ[next];
 
-			// The filled surface, not the raw one. That is the water surface, and it
-			// is what the fill guarantees never rises going downstream.
-			segE0[segments] = flow.filled(i);
-			segE1[segments] = flow.filled(next);
+			// The bed, not the water surface.
+			//
+			// These two are the same everywhere except inside a depression, where the
+			// fill raised the water above the ground. The carve interpolates the ground
+			// from here up to the divide, so handing it the water surface fills the
+			// valley with rock to lake level and turns every lake into a plateau. It
+			// also made the inversion guard fire on a fifth of all samples, because the
+			// water surface genuinely does stand above the uplift budget at those cells.
+			//
+			// Monotonicity is not lost by this. It was never a property of the bed: a
+			// lake bed dips below its own outlet, which is what makes it a lake. The
+			// invariant belongs to the water surface and is checked there.
+			segE0[segments] = flow.surface(i);
+			segE1[segments] = flow.surface(next);
 			segDischarge[segments] = flow.accumulated(i);
 			segOrder[segments] = order[i];
 			segStream[segments] = stream[i];
@@ -1031,12 +1067,21 @@ public final class BasinNetwork {
 	 * not. The fill is supposed to make this impossible, so a violation means the fill
 	 * or the routing is wrong, not that the tolerance needs loosening.
 	 */
-	private void checkMonotonic() {
+	private void checkMonotonic(final boolean[] channel) {
 		monotonicViolations = 0;
 		worstRise = 0.0;
 
-		for (int s = 0; s < segments; s++) {
-			double rise = segE1[s] - segE0[s];
+		// Checked on the filled surface, which is the water, not on the segment
+		// elevations, which are now the bed. A bed is allowed to rise going downstream;
+		// that is a lake. A water surface is not, and that is the invariant.
+		for (int i = 0; i < flow.size(); i++) {
+			int next = flow.downstream(i);
+
+			if (!channel[i] || next < 0 || !channel[next]) {
+				continue;
+			}
+
+			double rise = flow.filled(next) - flow.filled(i);
 
 			if (rise > 0.0) {
 				monotonicViolations++;

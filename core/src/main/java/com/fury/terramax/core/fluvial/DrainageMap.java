@@ -37,6 +37,18 @@ public final class DrainageMap {
 	 */
 	private final Map<Long, CompletableFuture<BasinNetwork>> networks = new ConcurrentHashMap<>();
 
+	/**
+	 * Insertion order, so the cache can be bounded without a lock.
+	 *
+	 * <p>Approximately first-in-first-out rather than least-recently-used. Proper LRU
+	 * needs the read path to record every access, which would put a write on the hottest
+	 * path in the generator to protect against a case that does not arise: a player is
+	 * in one basin and its neighbours, so the working set is a handful of entries
+	 * against a limit of twenty-four. The bound exists to stop a world-spanning render
+	 * holding every basin it ever touched, not to optimise a hit rate.
+	 */
+	private final java.util.Queue<Long> networkOrder = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
 	/** Reused per thread. The query runs for every column and must not allocate. */
 	private final ThreadLocal<BasinNetwork.Nearest> scratch =
 			ThreadLocal.withInitial(BasinNetwork.Nearest::new);
@@ -90,6 +102,8 @@ public final class DrainageMap {
 		try {
 			BasinNetwork solved = new BasinNetwork(outletKey, uplift, moisture, basins, settings);
 			mine.complete(solved);
+			networkOrder.add(outletKey);
+			evictOldest();
 
 			return solved;
 		} catch (RuntimeException failure) {
@@ -102,6 +116,18 @@ public final class DrainageMap {
 		}
 	}
 
+	private void evictOldest() {
+		while (networks.size() > settings.basinCacheLimit()) {
+			Long oldest = networkOrder.poll();
+
+			if (oldest == null) {
+				return;
+			}
+
+			networks.remove(oldest);
+		}
+	}
+
 	/**
 	 * Everything the carve needs to know about drainage at one column.
 	 *
@@ -111,15 +137,38 @@ public final class DrainageMap {
 	 * never see that pair.
 	 */
 	public DrainageSample sample(final double worldX, final double worldZ) {
+		return sample(worldX, worldZ, true);
+	}
+
+	/**
+	 * The same lookup, with tier 3 optionally left out.
+	 *
+	 * <p><b>A viewing concern, not a world one.</b> The game always asks for creeks; this
+	 * exists so the simulator does not have to build them for a picture that cannot show
+	 * them. At continental scale a pixel is 820 blocks and a creek is a few blocks wide,
+	 * so every creek in view is sub-pixel, and building them cost seven minutes for one
+	 * render that displayed none of them.
+	 *
+	 * <p>Same reasoning as {@code MoistureScale.forResolution}, which already solves
+	 * moisture no finer than the screen can show. Both cases are the renderer choosing
+	 * a resolution, never the world changing what it contains.
+	 */
+	public DrainageSample sample(
+			final double worldX, final double worldZ, final boolean withCreeks) {
 		BasinNetwork network = networkAt(worldX, worldZ);
 		BasinNetwork.Nearest nearest = scratch.get();
 
 		nearest.reset();
-		nearest.fallbackHalfSpacing(settings.creekSpacingBlocks() * 0.5);
+		nearest.fallbackHalfSpacing(withCreeks
+				? settings.creekSpacingBlocks() * 0.5
+				: settings.channelSpacingTargetBlocks() * 0.5);
 
 		network.offerNear(worldX, worldZ, nearest);
-		creeks.patchAt(worldX, worldZ, network)
-				.mergeNearest(worldX, worldZ, network.streamCount(), nearest);
+
+		if (withCreeks) {
+			creeks.patchAt(worldX, worldZ, network)
+					.mergeNearest(worldX, worldZ, network.streamCount(), nearest);
+		}
 
 		if (!nearest.found()) {
 			double budget = uplift.heightAt(worldX, worldZ);
@@ -138,6 +187,19 @@ public final class DrainageMap {
 				nearest.hillslope(),
 				network.lakeSurfaceAt(worldX, worldZ),
 				network.endorheicAt(worldX, worldZ));
+	}
+
+	/**
+	 * Blocks per pixel below which creeks are worth building.
+	 *
+	 * <p>A tenth of the creek spacing, not half of it. Half put the threshold at 1,000
+	 * blocks per pixel and a continental view is 820, so it passed and built every creek
+	 * in view to draw none of them. Individual creeks only resolve when a pixel is small
+	 * against the distance between them, and a creek channel is a few blocks wide
+	 * regardless.
+	 */
+	public double creekVisibleBelowBlocks() {
+		return settings.creekSpacingBlocks() * 0.1;
 	}
 
 	/** The basin covering this point, for callers that need more than a sample. */

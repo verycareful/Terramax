@@ -97,7 +97,10 @@ public record TerrainStatistics(
 								.region().type(),
 						1, Integer::sum);
 
-				double height = world.terrain().heightAt(worldX, worldZ);
+				// Coarse on purpose. This grid steps thousands of blocks, so creeks
+				// cannot change any statistic it produces, but building them across a
+				// 400 by 400 grid over a continent costs minutes.
+				double height = world.coarse().heightAt(worldX, worldZ);
 
 				min = Math.min(min, height);
 				max = Math.max(max, height);

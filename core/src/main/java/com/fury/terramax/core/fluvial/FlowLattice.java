@@ -42,10 +42,14 @@ public final class FlowLattice {
 
 	private final double[] surface;
 	private final double[] filled;
-	private final int[] floodParent;
 	private final int[] downstream;
 	private final double[] accumulated;
-	private final int[] processOrder;
+
+	// Released once the network is built. These exist only to get from a sampled
+	// surface to a routed one, and a cached basin that keeps them holds twice the
+	// memory it needs for the rest of the world's life.
+	private int[] floodParent;
+	private int[] processOrder;
 
 	private int processed;
 
@@ -306,6 +310,18 @@ public final class FlowLattice {
 				accumulated[next] += total;
 			}
 		}
+	}
+
+	/**
+	 * Frees the arrays only construction needed.
+	 *
+	 * <p>The flood tree and the pop order get a basin from sampled heights to a routed
+	 * network, and nothing reads them afterwards. Keeping them roughly doubles what a
+	 * cached basin costs, and a continental render holds many basins at once.
+	 */
+	public void compact() {
+		floodParent = null;
+		processOrder = null;
 	}
 
 	/** Follows downstream to the terminal cell, which is this cell's outlet. */

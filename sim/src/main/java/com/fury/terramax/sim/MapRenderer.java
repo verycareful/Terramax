@@ -499,7 +499,10 @@ public final class MapRenderer {
 			final TerrainModel.Snapshot world, final MapView view, final TerrainLayer layer,
 			final int minY, final int maxY, final int seaLevel,
 			final TileRenderer.TileListener listener) {
-		HeightField field = world.terrain();
+		// Creeks only where they would be visible. Same choice MoistureScale makes
+		// one line below, for the same reason.
+		HeightField field = world.terrainFor(view.blocksPerPixel());
+		boolean creeks = view.blocksPerPixel() <= world.drainage().creekVisibleBelowBlocks();
 		PlateMap plates = world.plates();
 		RegionMap regions = world.regions();
 		TemperatureField climate = world.temperature();
@@ -522,10 +525,10 @@ public final class MapRenderer {
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
 			case BASIN_ID -> basinIdColour(world.basins(), field, worldX, worldZ, seaLevel);
-			case DRAINAGE -> drainageColour(world, field, worldX, worldZ, minY, maxY, seaLevel);
-			case DISCHARGE -> dischargeColour(world, field, worldX, worldZ, seaLevel);
-			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel);
-			case LAKES -> lakeColour(world, field, worldX, worldZ, minY, maxY, seaLevel);
+			case DRAINAGE -> drainageColour(world, field, worldX, worldZ, minY, maxY, seaLevel, creeks);
+			case DISCHARGE -> dischargeColour(world, field, worldX, worldZ, seaLevel, creeks);
+			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel, creeks);
+			case LAKES -> lakeColour(world, field, worldX, worldZ, minY, maxY, seaLevel, creeks);
 			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
@@ -561,14 +564,14 @@ public final class MapRenderer {
 	private static int drainageColour(
 			final TerrainModel.Snapshot world, final HeightField field,
 			final double worldX, final double worldZ,
-			final int minY, final int maxY, final int seaLevel) {
+			final int minY, final int maxY, final int seaLevel, final boolean creeks) {
 		double height = field.heightAt(worldX, worldZ);
 
 		if (height <= seaLevel) {
 			return OCEAN.getRGB();
 		}
 
-		var drain = world.drainage().sample(worldX, worldZ);
+		var drain = world.drainage().sample(worldX, worldZ, creeks);
 		double halfWidth = channelHalfWidth(drain.order(), 1.0);
 
 		if (drain.hasChannel() && drain.distance() <= halfWidth) {
@@ -586,12 +589,12 @@ public final class MapRenderer {
 
 	private static int dischargeColour(
 			final TerrainModel.Snapshot world, final HeightField field,
-			final double worldX, final double worldZ, final int seaLevel) {
+			final double worldX, final double worldZ, final int seaLevel, final boolean creeks) {
 		if (field.heightAt(worldX, worldZ) <= seaLevel) {
 			return OCEAN.getRGB();
 		}
 
-		var drain = world.drainage().sample(worldX, worldZ);
+		var drain = world.drainage().sample(worldX, worldZ, creeks);
 
 		if (!drain.hasChannel()) {
 			return Color.BLACK.getRGB();
@@ -606,12 +609,12 @@ public final class MapRenderer {
 
 	private static int hillslopeColour(
 			final TerrainModel.Snapshot world, final HeightField field,
-			final double worldX, final double worldZ, final int seaLevel) {
+			final double worldX, final double worldZ, final int seaLevel, final boolean creeks) {
 		if (field.heightAt(worldX, worldZ) <= seaLevel) {
 			return OCEAN.getRGB();
 		}
 
-		float t = (float) world.drainage().sample(worldX, worldZ).hillslope();
+		float t = (float) world.drainage().sample(worldX, worldZ, creeks).hillslope();
 
 		return new Color(t, t, t).getRGB();
 	}
@@ -623,7 +626,7 @@ public final class MapRenderer {
 	private static int lakeColour(
 			final TerrainModel.Snapshot world, final HeightField field,
 			final double worldX, final double worldZ,
-			final int minY, final int maxY, final int seaLevel) {
+			final int minY, final int maxY, final int seaLevel, final boolean creeks) {
 		double height = field.heightAt(worldX, worldZ);
 
 		if (height <= seaLevel) {
@@ -631,7 +634,7 @@ public final class MapRenderer {
 		}
 
 		var drainage = world.drainage();
-		double surface = drainage.sample(worldX, worldZ).lakeSurface();
+		double surface = drainage.sample(worldX, worldZ, creeks).lakeSurface();
 
 		if (surface > height) {
 			// Shaded by depth so a deep rift lake reads differently from a shallow pan.

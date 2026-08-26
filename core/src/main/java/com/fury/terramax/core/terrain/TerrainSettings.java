@@ -27,8 +27,6 @@ package com.fury.terramax.core.terrain;
  * @param reliefVariationFraction  how much relief varies along a range, as a fraction of its height
  * @param detailAmplitude          small-scale roughness applied everywhere above sea level
  * @param detailWavelength         wavelength of that roughness, in blocks
- * @param valleyDepth              maximum depth of erosive valley carving, in blocks
- * @param valleyWavelength         spacing of valleys, in blocks
  * @param regionReliefWavelengthFactor global multiplier on each region type's own
  *                                     declared wavelength, for tuning without
  *                                     editing the type table
@@ -47,8 +45,6 @@ public record TerrainSettings(
 		double reliefVariationFraction,
 		double detailAmplitude,
 		double detailWavelength,
-		double valleyDepth,
-		double valleyWavelength,
 		double regionReliefWavelengthFactor,
 		Grain grain) {
 
@@ -124,8 +120,6 @@ public record TerrainSettings(
 				0.45,
 				28.0,
 				900.0,
-				90.0,
-				7000.0,
 				1.0,
 
 				// 900-block ridge spacing at 12x elongation gives ridges roughly

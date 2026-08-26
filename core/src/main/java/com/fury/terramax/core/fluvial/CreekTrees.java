@@ -64,6 +64,8 @@ public final class CreekTrees {
 	private final HeightField uplift;
 	private final DrainageSettings settings;
 	private final Map<Long, Patch> patches = new ConcurrentHashMap<>();
+	private final java.util.Queue<Long> order =
+			new java.util.concurrent.ConcurrentLinkedQueue<>();
 
 	public CreekTrees(final long seed, final HeightField uplift, final DrainageSettings settings) {
 		this.seed = seed;
@@ -99,6 +101,23 @@ public final class CreekTrees {
 
 		Patch built = build(key, basin);
 		Patch existing = patches.putIfAbsent(key, built);
+
+		if (existing == null) {
+			order.add(key);
+
+			// Bounded the same way basins are, and for the same reason: a planetary
+			// render must not hold every patch it ever touched. Patches are small, so
+			// the limit is large and eviction is rare in play.
+			while (patches.size() > settings.creekCacheLimit()) {
+				Long oldest = order.poll();
+
+				if (oldest == null) {
+					break;
+				}
+
+				patches.remove(oldest);
+			}
+		}
 
 		return existing != null ? existing : built;
 	}
@@ -144,6 +163,14 @@ public final class CreekTrees {
 		private double lengthSum;
 		private double areaSum;
 		private int nextStream;
+
+		// Regression sums for Hack's law, accumulated as branches are made so the
+		// exponent can be measured off the network rather than assumed from the
+		// setting that asked for it.
+		private double logLengthSum;
+		private double logAreaSum;
+		private double logAreaSquaredSum;
+		private double logProductSum;
 
 		Builder(final double originX, final double originZ) {
 			this.originX = originX;
@@ -248,6 +275,13 @@ public final class CreekTrees {
 			areaSum += area;
 			junctions++;
 			perLevel[Math.min(perLevel.length - 1, levelsLeft)]++;
+
+			double logLength = Math.log(length);
+			double logArea = Math.log(Math.max(1.0e-9, area));
+			logLengthSum += logLength;
+			logAreaSum += logArea;
+			logAreaSquaredSum += logArea * logArea;
+			logProductSum += logArea * logLength;
 
 			// Hack's law inverted: a branch shorter by the length ratio drains an area
 			// smaller by that ratio raised to 1/0.57, which is what keeps the measured
@@ -359,7 +393,8 @@ public final class CreekTrees {
 					java.util.Arrays.copyOf(discharge, count),
 					java.util.Arrays.copyOf(order, count),
 					java.util.Arrays.copyOf(stream, count),
-					branches, junctions, lengthSum, areaSum, perLevel.clone());
+					branches, junctions, lengthSum, areaSum, perLevel.clone(),
+					new double[] {logLengthSum, logAreaSum, logAreaSquaredSum, logProductSum});
 		}
 	}
 
@@ -380,12 +415,14 @@ public final class CreekTrees {
 		private final double lengthSum;
 		private final double areaSum;
 		private final int[] perLevel;
+		private final double[] hackSums;
 
 		Patch(final double[] x0, final double[] z0, final double[] x1, final double[] z1,
 				final double[] e0, final double[] e1, final double[] discharge,
 				final int[] order, final int[] stream,
 				final int branches, final int junctions,
-				final double lengthSum, final double areaSum, final int[] perLevel) {
+				final double lengthSum, final double areaSum, final int[] perLevel,
+				final double[] hackSums) {
 			this.x0 = x0;
 			this.z0 = z0;
 			this.x1 = x1;
@@ -400,6 +437,15 @@ public final class CreekTrees {
 			this.lengthSum = lengthSum;
 			this.areaSum = areaSum;
 			this.perLevel = perLevel;
+			this.hackSums = hackSums;
+		}
+
+		/**
+		 * Regression sums for Hack's law: log length, log area, log area squared, and
+		 * their product. The slope of log length against log area is the exponent.
+		 */
+		public double[] hackSums() {
+			return hackSums;
 		}
 
 		/**

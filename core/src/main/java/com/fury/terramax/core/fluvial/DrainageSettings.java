@@ -91,7 +91,7 @@ package com.fury.terramax.core.fluvial;
  * @param evaporationFactor          scales the vapour deficit that decides whether a lake spills
  * @param closedBasinMinDepthBlocks  sill depth below which a depression is incised through, not closed
  * @param bucketSizeBlocks           spatial index cell for the nearest-channel search
- * @param basinCacheLimit            tier 2 solves held resident
+ * @param basinCacheLimit            tier 2 solves held resident; sized for wide renders, not for play
  * @param creekCacheLimit            tier 3 patches held resident
  */
 public record DrainageSettings(
@@ -154,7 +154,7 @@ public record DrainageSettings(
 				1.0,          // evaporationFactor
 				75.0,         // closedBasinMinDepthBlocks
 				2_000.0,      // bucketSizeBlocks
-				24,           // basinCacheLimit
+				1_024,        // basinCacheLimit
 				4_096);       // creekCacheLimit
 	}
 

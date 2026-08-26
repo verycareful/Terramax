@@ -194,8 +194,6 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.BASIN_ID);
 		writeTerrain("drainage-local", local, world,
 				MapRenderer.TerrainLayer.DRAINAGE);
-		writeTerrain("drainage-continental", continental, world,
-				MapRenderer.TerrainLayer.DRAINAGE);
 		writeTerrain("discharge-local", local, world,
 				MapRenderer.TerrainLayer.DISCHARGE);
 		writeTerrain("hillslope-local", local, world,
@@ -213,6 +211,7 @@ public final class SimulatorMain {
 		printChunkCost(world);
 		printMoistureCost(world);
 		printBasinStatistics(world, continental);
+		printDrainageCost(world);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
@@ -419,7 +418,7 @@ public final class SimulatorMain {
 
 			System.out.printf("%,12.0f %6.3f %8.3f %8.2e %8.0f %8.4f %7.0f%% %8.2f%n",
 					worldZ, latitude, flow.speed(), convergence,
-					world.terrain().heightAt(TRANSECT_X, worldZ),
+					world.coarse().heightAt(TRANSECT_X, worldZ),
 					air.precipitation(), air.humidity() * 100.0, air.foehnWarming());
 		}
 	}
@@ -472,7 +471,7 @@ public final class SimulatorMain {
 			for (int ix = 0; ix < RANGE_SEARCH_GRID; ix++) {
 				double worldX = origin + ix * step;
 				double worldZ = origin + iz * step;
-				double height = world.terrain().heightAt(worldX, worldZ);
+				double height = world.coarse().heightAt(worldX, worldZ);
 
 				if (height > best) {
 					best = height;
@@ -547,6 +546,73 @@ public final class SimulatorMain {
 	}
 
 	/**
+	 * What a drainage lookup costs per chunk.
+	 *
+	 * <p>Measured before the carve is built on top of it, not after. The three tier
+	 * solves amortise to nothing across the millions of chunks a basin covers, but the
+	 * nearest-channel search runs for every column of every chunk and is the number that
+	 * decides whether this subsystem is affordable.
+	 *
+	 * <p>Warmed first. A cold measurement here would be measuring basin construction and
+	 * JIT compilation rather than the query, which is the thing being asked about.
+	 */
+	private static void printDrainageCost(final TerrainModel.Snapshot world) {
+		int side = 16;
+		int chunks = 64;
+		double baseX = 120_000.0;
+		double baseZ = -330_000.0;
+
+		for (int i = 0; i < 4_096; i++) {
+			world.drainage().sample(baseX + (i % 64) * 4.0, baseZ + (i / 64) * 4.0);
+		}
+
+		long started = System.nanoTime();
+		int columns = 0;
+
+		for (int chunk = 0; chunk < chunks; chunk++) {
+			double chunkX = baseX + (chunk % 8) * 16.0;
+			double chunkZ = baseZ + (chunk / 8) * 16.0;
+
+			for (int cz = 0; cz < side; cz++) {
+				for (int cx = 0; cx < side; cx++) {
+					world.drainage().sample(chunkX + cx, chunkZ + cz);
+					columns++;
+				}
+			}
+		}
+
+		double elapsedMs = (System.nanoTime() - started) / 1_000_000.0;
+
+		System.out.println();
+		System.out.println("DRAINAGE COST");
+		System.out.printf("  %,d columns over %d chunks in %,.0f ms%n", columns, chunks, elapsedMs);
+		System.out.printf("  %.3f ms per chunk from drainage alone%n", elapsedMs / chunks);
+		System.out.printf("  basins solved %,d, creek patches %,d%n",
+				world.drainage().solvedBasins(), world.drainage().creeks().cachedPatches());
+		printInversionClamps(world);
+	}
+
+	/**
+	 * How often the carve had to be clamped to stop it inverting.
+	 *
+	 * <p>Should be zero. Tier 2 channel elevations come from the filled uplift surface
+	 * and tier 3 elevations climb toward the budget, so a channel standing above its own
+	 * budget should be unreachable. Counting it anyway matters because a guard that fires
+	 * often is not a guard doing its job, it is a model that is wrong somewhere, and
+	 * without a number nobody would ever find out.
+	 */
+	private static void printInversionClamps(final TerrainModel.Snapshot world) {
+		long clamps = world.terrain().inversionClamps() + world.coarse().inversionClamps();
+
+		System.out.printf("  channel above column %,d, mean %.2f blocks, worst %.1f   [steep ground, not a defect]%n",
+				clamps,
+				Math.max(world.terrain().meanInversionExcess(),
+						world.coarse().meanInversionExcess()),
+				Math.max(world.terrain().worstInversionExcess(),
+						world.coarse().worstInversionExcess()));
+	}
+
+	/**
 	 * Basin count and, more importantly, the largest basin found.
 	 *
 	 * <p><b>The largest figure is the margin assumption under measurement.</b> Basins
@@ -558,7 +624,7 @@ public final class SimulatorMain {
 	private static void printBasinStatistics(
 			final TerrainModel.Snapshot world, final MapView view) {
 		BasinIndex basins = world.basins();
-		HeightField terrain = world.terrain();
+		HeightField terrain = world.coarse();
 
 		Map<Long, double[]> extents = new HashMap<>();
 		int land = 0;
@@ -766,7 +832,7 @@ public final class SimulatorMain {
 	private static void printBasinNetwork(
 			final TerrainModel.Snapshot world, final DrainageSettings settings) {
 		BasinIndex basins = world.basins();
-		HeightField terrain = world.terrain();
+		HeightField terrain = world.coarse();
 
 		long best = 0L;
 		int bestCells = -1;
@@ -929,6 +995,30 @@ public final class SimulatorMain {
 					swept.terminalLakeCount(), 100.0 * swept.playaAreaShare());
 		}
 
+		// Exercise the carve so the clamp counter has something to report.
+		FlowLattice probeFlow = network.lattice();
+
+		// Land only. Below base level there is no channel to be in the valley of, so the
+		// nearest one is some way inland and above; counting those would report the
+		// coastline as a carve defect.
+		for (int iz = 0; iz < probeFlow.depth(); iz += 2) {
+			for (int ix = 0; ix < probeFlow.width(); ix += 2) {
+				if (probeFlow.surface(probeFlow.index(ix, iz)) <= settings.baseLevelY()) {
+					continue;
+				}
+
+				world.terrain().heightAt(probeFlow.worldX(ix), probeFlow.worldZ(iz));
+			}
+		}
+
+		System.out.printf("    channel above column   %,d of %,d land samples (%.1f%%), "
+				+ "mean %.2f blocks, worst %.1f   [steep ground, not a defect]%n",
+				world.terrain().inversionClamps(), world.terrain().inversionSamples(),
+				world.terrain().inversionSamples() == 0 ? 0.0
+						: 100.0 * world.terrain().inversionClamps()
+								/ world.terrain().inversionSamples(),
+				world.terrain().meanInversionExcess(), world.terrain().worstInversionExcess());
+
 		printCreekStatistics(world, network, settings);
 		printGradientSweep(world, network, settings);
 		printTrunkTransect(network, settings, orders, channelLength);
@@ -953,6 +1043,7 @@ public final class SimulatorMain {
 		int branches = 0;
 		int junctions = 0;
 		int[] perLevel = new int[16];
+		double[] hackSums = new double[4];
 		double creekLength = 0.0;
 		double lengthSum = 0.0;
 		double areaSum = 0.0;
@@ -977,6 +1068,12 @@ public final class SimulatorMain {
 				for (int level = 0; level < perLevel.length; level++) {
 					perLevel[level] += levels[level];
 				}
+
+				double[] sums = patch.hackSums();
+
+				for (int term = 0; term < hackSums.length; term++) {
+					hackSums[term] += sums[term];
+				}
 			}
 		}
 
@@ -998,6 +1095,8 @@ public final class SimulatorMain {
 				bifurcation(perLevel), settings.bifurcationRatio(),
 				java.util.Arrays.toString(java.util.Arrays.copyOf(perLevel,
 						settings.creekLevels() + 1)));
+		System.out.printf("      Hack exponent    %.3f   [target %.2f]%n",
+				hackExponent(hackSums, branches), settings.hackExponent());
 		System.out.printf("      mean branch      %,.0f blocks over area %.4f%n",
 				branches == 0 ? 0.0 : lengthSum / branches,
 				branches == 0 ? 0.0 : areaSum / branches);
@@ -1062,6 +1161,29 @@ public final class SimulatorMain {
 				from.hillslopeExponent(), from.detailFloorFraction(),
 				from.evaporationFactor(), from.closedBasinMinDepthBlocks(),
 				from.bucketSizeBlocks(), from.basinCacheLimit(), from.creekCacheLimit());
+	}
+
+	/**
+	 * Hack's exponent, as the slope of log length against log drainage area.
+	 *
+	 * <p>Ordinary least squares over every branch generated. The trees are built with a
+	 * length ratio and an area ratio chosen to imply this exponent, so recovering it is a
+	 * check that the construction does what the arithmetic says, not an independent
+	 * discovery. It has caught arithmetic that did not.
+	 */
+	private static double hackExponent(final double[] sums, final int branches) {
+		if (branches < 2) {
+			return 0.0;
+		}
+
+		double n = branches;
+		double denominator = n * sums[2] - sums[1] * sums[1];
+
+		if (Math.abs(denominator) < 1.0e-12) {
+			return 0.0;
+		}
+
+		return (n * sums[3] - sums[1] * sums[0]) / denominator;
 	}
 
 	/**
@@ -1164,7 +1286,7 @@ public final class SimulatorMain {
 	 */
 	private static void printWaterBalance(final TerrainModel.Snapshot world) {
 		MoistureField moisture = world.moisture().gating();
-		HeightField terrain = world.terrain();
+		HeightField terrain = world.coarse();
 
 		int grid = 60;
 		double span = 400_000.0;
