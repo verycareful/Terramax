@@ -12,6 +12,7 @@ import com.fury.terramax.core.region.RegionSettings;
 import com.fury.terramax.core.terrain.TectonicHeight;
 import com.fury.terramax.core.terrain.TerrainHeight;
 import com.fury.terramax.core.terrain.TerrainSettings;
+import com.fury.terramax.core.terrain.UpliftHeight;
 
 /**
  * Owns the simulator's settings and the world built from them.
@@ -160,9 +161,14 @@ public final class TerrainModel {
 				RegionClimate.fromPrecipitation(
 						moisture.gating(), DRY_RAIN_RATE, WET_RAIN_RATE));
 
+		// Uplift is the budget: crust base, boundary relief and region relief, with
+		// nothing eroded away yet. Drainage will route over this, which is why it is
+		// its own field rather than something TerrainHeight computes privately.
+		UpliftHeight uplift = new UpliftHeight(seed, tectonic, regions, terrainSettings);
+
 		this.snapshot = new Snapshot(
 				plates, regions,
-				new TerrainHeight(seed, tectonic, regions, terrainSettings),
+				new TerrainHeight(seed, uplift, terrainSettings),
 				temperature, wind, moisture);
 	}
 }
