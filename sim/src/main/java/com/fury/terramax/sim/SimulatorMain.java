@@ -202,6 +202,8 @@ public final class SimulatorMain {
 				MapRenderer.TerrainLayer.LAKES);
 		writeTerrain("lakes-continental", continental, world,
 				MapRenderer.TerrainLayer.LAKES);
+		writeTerrain("incision-local", local, world,
+				MapRenderer.TerrainLayer.INCISION);
 
 		writeRangeDetail(world, spacing);
 		writeCrossSection(world, spacing);
@@ -493,6 +495,8 @@ public final class SimulatorMain {
 		// Wind at range scale is the only view where deflection is legible. The whole
 		// view sits inside one climate band, so the base flow is near-constant and
 		// every variation on screen is terrain bending the air.
+		writeTerrain("range-incision", view, world, MapRenderer.TerrainLayer.INCISION);
+		writeTerrain("range-drainage", view, world, MapRenderer.TerrainLayer.DRAINAGE);
 		writeTerrain("range-wind", view, world, MapRenderer.TerrainLayer.WIND);
 		writeTerrain("range-life-zone", view, world, MapRenderer.TerrainLayer.LIFE_ZONE);
 
@@ -975,19 +979,7 @@ public final class SimulatorMain {
 		for (double depth : new double[] {0.0, 10.0, 25.0, 50.0, 100.0}) {
 			BasinNetwork swept = new BasinNetwork(
 					best, world.uplift(), world.moisture().gating(), basins,
-					new DrainageSettings(
-							settings.provinceLatticeBlocks(), settings.provinceTileBlocks(),
-							settings.provinceMarginBlocks(), settings.basinLatticeBlocks(),
-							settings.baseLevelY(), settings.channelSpacingTargetBlocks(),
-							settings.creekSpacingBlocks(), settings.creekLevels(),
-							settings.bifurcationRatio(), settings.lengthRatio(),
-							settings.junctionAngleMinDegrees(), settings.junctionAngleMaxDegrees(),
-							settings.hackExponent(), settings.slopeAreaExponent(),
-							settings.gradientScale(), settings.floodplainWidthFactor(),
-							settings.hillslopeExponent(), settings.detailFloorFraction(),
-							settings.evaporationFactor(), depth,
-							settings.bucketSizeBlocks(), settings.basinCacheLimit(),
-							settings.creekCacheLimit()));
+					settings.withClosedBasinDepth(depth));
 
 			System.out.printf("      sill >= %,6.0f blocks  ->  %5.1f%% endorheic, "
 					+ "%4d closed basins, %d terminal lakes, playas %.2f%%%n",
@@ -1019,9 +1011,166 @@ public final class SimulatorMain {
 								/ world.terrain().inversionSamples(),
 				world.terrain().meanInversionExcess(), world.terrain().worstInversionExcess());
 
+		printIncision(world, probeFlow, settings);
+		printSeamTest(world, settings);
+		printChannelGradientSweep(world, network, basins, best, settings);
 		printCreekStatistics(world, network, settings);
 		printGradientSweep(world, network, settings);
 		printTrunkTransect(network, settings, orders, channelLength);
+	}
+
+	/**
+	 * Sweeps the channel gradient against how deeply rivers cut.
+	 *
+	 * <p>The constant sets how fast the equilibrium profile climbs inland, and it works
+	 * backwards from the obvious direction: a <i>smaller</i> value keeps the profile low
+	 * further upstream, so there is more ground above it to remove. Too small and the
+	 * profile stays near sea level across a continent, giving canyons everywhere; too
+	 * large and it meets the ground a short way inland and only coasts incise.
+	 *
+	 * <p>Measured at the channels themselves rather than through the finished surface, so
+	 * it separates what the profile does from what the uplift surface was already doing.
+	 */
+	private static void printChannelGradientSweep(
+			final TerrainModel.Snapshot world, final BasinNetwork current,
+			final BasinIndex basins, final long outlet, final DrainageSettings settings) {
+		System.out.println();
+		System.out.println("      channel gradient sweep   [valley relief on Earth, scaled: "
+				+ "20 to 80 blocks in hills, 170 to 330 in mountains]");
+
+		for (double scale : new double[] {0.0002, 0.0005, 0.001, 0.002, 0.005}) {
+			BasinNetwork swept = new BasinNetwork(
+					outlet, world.uplift(), world.moisture().gating(), basins,
+					settings.withChannelGradient(scale));
+
+			System.out.printf("        scale %.4f  ->  mean cut at channel %6.1f blocks, "
+					+ "deepest %7.1f, over 10 blocks on %5.1f%% of channels, "
+					+ "monotonic %s%n",
+					scale, swept.meanChannelIncision(), swept.deepestIncision(),
+					100.0 * swept.deeplyIncisedShare(),
+					swept.monotonic() ? "yes" : "NO");
+		}
+	}
+
+	/**
+	 * Tests whether terrain steps at tier 1 cell boundaries.
+	 *
+	 * <p>Compares the height difference between column pairs that straddle a province
+	 * lattice boundary against pairs that do not, over the same distance. If basin
+	 * assignment is leaking into the shape of the world, straddling pairs jump and
+	 * interior pairs do not, and the ratio says so plainly.
+	 *
+	 * <p>Worth measuring rather than asserting. The first explanation offered for the
+	 * rectangular seams was creek stream identity, which turned out to be a real bug that
+	 * was not this one: fixing it restored eighty thousand dropped branches and left the
+	 * seams exactly where they were.
+	 */
+	private static void printSeamTest(
+			final TerrainModel.Snapshot world, final DrainageSettings settings) {
+		double lattice = settings.provinceLatticeBlocks();
+		double step = 4.0;
+
+		double straddleSum = 0.0;
+		double straddleWorst = 0.0;
+		int straddleCount = 0;
+		double interiorSum = 0.0;
+		double interiorWorst = 0.0;
+		int interiorCount = 0;
+
+		double baseZ = -330_000.0;
+
+		for (int cell = 0; cell < 24; cell++) {
+			double boundary = Math.floor(120_000.0 / lattice + cell) * lattice;
+
+			for (int lane = 0; lane < 8; lane++) {
+				double z = baseZ + lane * 900.0;
+
+				if (world.terrain().heightAt(boundary, z) <= MapPanel.SEA_LEVEL) {
+					continue;
+				}
+
+				// Straddling: one column each side of the boundary.
+				double jump = Math.abs(world.terrain().heightAt(boundary + step * 0.5, z)
+						- world.terrain().heightAt(boundary - step * 0.5, z));
+				straddleSum += jump;
+				straddleWorst = Math.max(straddleWorst, jump);
+				straddleCount++;
+
+				// Interior: the same separation, well away from any boundary.
+				double inside = boundary + lattice * 0.5;
+				double flat = Math.abs(world.terrain().heightAt(inside + step * 0.5, z)
+						- world.terrain().heightAt(inside - step * 0.5, z));
+				interiorSum += flat;
+				interiorWorst = Math.max(interiorWorst, flat);
+				interiorCount++;
+			}
+		}
+
+		double straddleMean = straddleCount == 0 ? 0.0 : straddleSum / straddleCount;
+		double interiorMean = interiorCount == 0 ? 0.0 : interiorSum / interiorCount;
+
+		System.out.println();
+		System.out.printf("    SEAM TEST at the %,.0f-block province lattice, over %d pairs%n",
+				lattice, straddleCount);
+		System.out.printf("      across a boundary  mean %.2f blocks, worst %.1f%n",
+				straddleMean, straddleWorst);
+		System.out.printf("      inside a cell      mean %.2f blocks, worst %.1f%n",
+				interiorMean, interiorWorst);
+		System.out.printf("      ratio              %.1fx%s%n",
+				interiorMean <= 0.0 ? 0.0 : straddleMean / interiorMean,
+				interiorMean > 0.0 && straddleMean / interiorMean > 3.0
+						? "   *** terrain steps at basin boundaries" : "   [no step]");
+	}
+
+	/**
+	 * How much ground the carve actually removes.
+	 *
+	 * <p>The whole claim of the redesign is that rivers cut. If the finished surface sits
+	 * on the uplift surface everywhere, then uplift is not being spent, it is just being
+	 * copied, and the carve is a smoothing pass wearing a river's clothes.
+	 */
+	private static void printIncision(
+			final TerrainModel.Snapshot world, final FlowLattice flow,
+			final DrainageSettings settings) {
+		double total = 0.0;
+		double deepest = 0.0;
+		int samples = 0;
+		int cutTen = 0;
+		int cutFifty = 0;
+
+		for (int iz = 0; iz < flow.depth(); iz += 2) {
+			for (int ix = 0; ix < flow.width(); ix += 2) {
+				if (flow.surface(flow.index(ix, iz)) <= settings.baseLevelY()) {
+					continue;
+				}
+
+				double x = flow.worldX(ix);
+				double z = flow.worldZ(iz);
+				double cut = world.uplift().heightAt(x, z) - world.terrain().heightAt(x, z);
+
+				samples++;
+				total += cut;
+				deepest = Math.max(deepest, cut);
+
+				if (cut > 10.0) {
+					cutTen++;
+				}
+
+				if (cut > 50.0) {
+					cutFifty++;
+				}
+			}
+		}
+
+		System.out.println();
+		System.out.printf("    INCISION, over %,d land samples%n", samples);
+		System.out.printf("      mean cut         %.1f blocks below the uplift budget%n",
+				samples == 0 ? 0.0 : total / samples);
+		System.out.printf("      deepest cut      %.1f blocks%n", deepest);
+		System.out.printf("      cut over 10      %.1f%% of land%n",
+				samples == 0 ? 0.0 : 100.0 * cutTen / samples);
+		System.out.printf("      cut over 50      %.1f%% of land%n",
+				samples == 0 ? 0.0 : 100.0 * cutFifty / samples);
 	}
 
 	/**
@@ -1125,7 +1274,7 @@ public final class SimulatorMain {
 		System.out.println("      creek gradient sweep   [target spacing 1,500 to 3,000]");
 
 		for (double gradient : new double[] {0.002, 0.005, 0.010, 0.020, 0.060}) {
-			DrainageSettings swept = withGradient(settings, gradient);
+			DrainageSettings swept = settings.withCreekGradient(gradient);
 			CreekTrees trees = new CreekTrees(world.seedForCreeks(), world.uplift(), swept);
 
 			double creekLength = 0.0;
@@ -1145,22 +1294,6 @@ public final class SimulatorMain {
 					+ "%,8d creek segments%n",
 					gradient, landArea / (creekLength + trunkLength), segments);
 		}
-	}
-
-	private static DrainageSettings withGradient(
-			final DrainageSettings from, final double gradientScale) {
-		return new DrainageSettings(
-				from.provinceLatticeBlocks(), from.provinceTileBlocks(),
-				from.provinceMarginBlocks(), from.basinLatticeBlocks(),
-				from.baseLevelY(), from.channelSpacingTargetBlocks(),
-				from.creekSpacingBlocks(), from.creekLevels(),
-				from.bifurcationRatio(), from.lengthRatio(),
-				from.junctionAngleMinDegrees(), from.junctionAngleMaxDegrees(),
-				from.hackExponent(), from.slopeAreaExponent(),
-				gradientScale, from.floodplainWidthFactor(),
-				from.hillslopeExponent(), from.detailFloorFraction(),
-				from.evaporationFactor(), from.closedBasinMinDepthBlocks(),
-				from.bucketSizeBlocks(), from.basinCacheLimit(), from.creekCacheLimit());
 	}
 
 	/**

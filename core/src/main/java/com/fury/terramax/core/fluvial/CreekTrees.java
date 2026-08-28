@@ -50,12 +50,22 @@ public final class CreekTrees {
 	private static final long SALT_ANGLE = 0xBF58476D1CE4E5B9L;
 	private static final long SALT_SIDE = 0x9E3779B97F4A7C15L;
 	private static final long SALT_LENGTH = 0xC2B2AE3D27D4EB4FL;
+	private static final long SALT_STREAM = 0x2545F4914F6CDD1DL;
 
 	/** Patch side, in blocks. Large enough to hold whole creek trees, small to cache. */
 	private static final double PATCH_BLOCKS = 8_000.0;
 
 	/** Straight-line steps a creek is drawn with, so it bends rather than being a spoke. */
 	private static final int SEGMENTS_PER_BRANCH = 3;
+
+	/**
+	 * Marks a stream id as belonging to a creek rather than to a tier 2 channel.
+	 *
+	 * <p>Creek ids are hashed from position and trunk ids are small counters, so without
+	 * a separating bit a creek could be handed the same id as a trunk and the divide
+	 * between them would vanish.
+	 */
+	private static final int CREEK_STREAM_MARK = 0x4000_0000;
 
 	/** How far a creek wanders per step, as a fraction of the step length. */
 	private static final double WANDER = 0.22;
@@ -128,17 +138,39 @@ public final class CreekTrees {
 
 		Builder builder = new Builder(originX, originZ);
 
-		// A creek can reach into this patch from a trunk just outside it, so anchors are
-		// gathered from a margin around the patch as well. Without that, every patch
-		// boundary would cut the tributaries crossing it.
+		// A creek can reach into this patch from a trunk outside it, so anchors are
+		// gathered from a margin as well. The margin has to cover the furthest a tree
+		// can reach from its anchor, which is the first branch plus every shorter
+		// generation after it, not a guessed multiple of the spacing: a creek whose
+		// anchor falls outside the margin simply vanishes on this side of the boundary
+		// while existing on the other.
+		double reach = maximumReach();
+
 		basin.forEachSegmentNear(
-				originX - settings.creekSpacingBlocks() * 2.0,
-				originZ - settings.creekSpacingBlocks() * 2.0,
-				originX + PATCH_BLOCKS + settings.creekSpacingBlocks() * 2.0,
-				originZ + PATCH_BLOCKS + settings.creekSpacingBlocks() * 2.0,
+				originX - reach, originZ - reach,
+				originX + PATCH_BLOCKS + reach, originZ + PATCH_BLOCKS + reach,
 				builder::spawnAlong);
 
 		return builder.finish();
+	}
+
+	/**
+	 * Furthest a creek tree can extend from the trunk it hangs off.
+	 *
+	 * <p>The first branch is at most one creek spacing long and each generation is
+	 * shorter by the length ratio, so the total is a geometric sum. Doubled, because a
+	 * branch wanders as it grows and does not run straight away from its anchor.
+	 */
+	private double maximumReach() {
+		double length = settings.creekSpacingBlocks();
+		double total = 0.0;
+
+		for (int level = 0; level < settings.creekLevels(); level++) {
+			total += length;
+			length /= settings.lengthRatio();
+		}
+
+		return total * 2.0;
 	}
 
 	/** Builds one patch's creeks, then freezes them into flat arrays. */
@@ -162,7 +194,6 @@ public final class CreekTrees {
 		private final int[] perLevel = new int[16];
 		private double lengthSum;
 		private double areaSum;
-		private int nextStream;
 
 		// Regression sums for Hack's law, accumulated as branches are made so the
 		// exponent can be measured off the network rather than assumed from the
@@ -235,7 +266,8 @@ public final class CreekTrees {
 						* (0.55 + 0.45 * Hashing.unitDouble(seed, hx, hz, SALT_LENGTH));
 
 				grow(px, pz, pe, baseAngle, branchLength, area,
-						Math.max(1, trunkOrder - 1), settings.creekLevels(), nextStream++);
+						Math.max(1, trunkOrder - 1), settings.creekLevels(),
+						streamIdAt(px, pz));
 			}
 		}
 
@@ -333,7 +365,8 @@ public final class CreekTrees {
 
 					grow(joinX, joinZ, joinElevation, heading + childSide * spread,
 							length / settings.lengthRatio(), childArea,
-							Math.max(1, branchOrder - 1), levelsLeft - 1, nextStream++);
+							Math.max(1, branchOrder - 1), levelsLeft - 1,
+							streamIdAt(joinX, joinZ));
 				}
 
 				grown += wanted;
@@ -342,6 +375,28 @@ public final class CreekTrees {
 				z = nz;
 				elevation = ne;
 			}
+		}
+
+		/**
+		 * A creek's stream identity, hashed from where it leaves its parent.
+		 *
+		 * <p><b>Not a counter, and it was one.</b> A per-patch counter numbers the same
+		 * creek differently depending on which patch generated it and in what order.
+		 * Stream identity decides the divide, since the search keeps the two nearest
+		 * <i>distinct</i> streams, so two adjacent columns on opposite sides of a patch
+		 * boundary computed different hillslope positions and therefore different
+		 * heights. That put hard rectangular seams across the whole world at 8,000-block
+		 * spacing, invisible on an elevation ramp and unmistakable once cut depth was
+		 * rendered on its own.
+		 *
+		 * <p>Hashing the junction position instead makes identity a property of the
+		 * creek. Every patch that sees it agrees, because they are all asking the same
+		 * question about the same place.
+		 */
+		private int streamIdAt(final double worldX, final double worldZ) {
+			long hash = Hashing.hash(seed, Math.round(worldX), Math.round(worldZ), SALT_STREAM);
+
+			return CREEK_STREAM_MARK | (int) (hash & 0x3FFF_FFFFL);
 		}
 
 		private void add(

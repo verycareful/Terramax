@@ -56,13 +56,35 @@ package com.fury.terramax.core.fluvial;
  * Attempting 8 measures 3.85, which is Horton's number where it is actually observable:
  * on the ground.
  *
- * <p><b>{@code gradientScale} has to stay below the hillslope gradient.</b> A creek
- * climbs at this rate and terminates where it meets the budget, so a value steeper than
- * the hill it is climbing kills every creek at its first step. This world's hillslopes
- * rise at roughly 0.017 and the first value tried was 0.06, which is why creeks
- * contributed almost nothing. That constraint is also physically right: a channel is
- * always less steep than the slopes flanking it, which is what makes it a valley.
- * Swept, 0.002 to 0.010 all put channel spacing inside the target band.
+ * <p><b>{@code gradientScale} depends on how much headroom a creek starts with, and
+ * that changed.</b> A creek climbs at this rate and terminates where it meets the uplift
+ * budget. While channel beds were read off the uplift surface a creek began level with
+ * the ground, so anything steeper than the broad hillslope gradient of about 0.017
+ * killed it at its first step, and 0.06 produced almost no creek length at all.
+ *
+ * <p>With channels incising, a creek now starts below the ground and has room to climb.
+ * Re-swept on that footing, 0.06 gives 1,590 blocks of channel spacing where 0.010 gives
+ * 814, far denser than intended. 0.06 is also the more realistic figure on its own
+ * terms: six percent is an ordinary headwater stream gradient, and the 0.017 measured
+ * earlier was the uplift surface averaged over 1,000 blocks, which is a landscape-scale
+ * number rather than the slope beside a creek.
+ *
+ * <p><b>{@code channelGradientScale} is what makes rivers cut.</b> Channel beds are not
+ * read off the uplift surface. They are integrated upstream from each outlet by adding
+ * the slope-area relation at every step, and the bed is then the lower of that profile
+ * and the ground. Where uplift stands far above the profile, as in a mountain, the river
+ * cuts a gorge; where the ground already sits near it, as on a plain, it barely cuts at
+ * all. Valley depth becomes a consequence of relief and discharge rather than a
+ * constant, which is the whole claim of making rivers primary.
+ *
+ * <p>Reading beds off the uplift surface instead, as this first did, meant the carve
+ * interpolated between uplift-derived values and could never cut below them. Measured,
+ * it removed a mean of 4.7 blocks and cut more than 10 blocks on 8 percent of land: a
+ * smoothing pass in a river's clothes.
+ *
+ * <p>The constant sets how fast the profile climbs inland, and it cuts both ways. Too
+ * large and the profile meets the ground a short way upstream, so only coasts incise.
+ * Too small and it stays near sea level far inland, giving canyons everywhere.
  *
  * <p>Five values here have no defensible starting guess and are found in the simulator
  * against the drainage statistics: {@code gradientScale},
@@ -84,7 +106,8 @@ package com.fury.terramax.core.fluvial;
  * @param junctionAngleMaxDegrees    widest tributary junction
  * @param hackExponent               exponent in Hack's law, length against area
  * @param slopeAreaExponent          exponent in the slope-area relation; makes headwaters steep
- * @param gradientScale              constant in the slope-area relation; must stay under the hillslope gradient
+ * @param gradientScale              constant in the slope-area relation for tier 3 creeks
+ * @param channelGradientScale       the same constant for tier 2 channels; sets how deeply rivers incise
  * @param floodplainWidthFactor      how far a floodplain reaches toward the divide, per unit discharge
  * @param hillslopeExponent          skew on the channel-to-divide profile; 1.0 is pure smoothstep
  * @param detailFloorFraction        detail amplitude at a channel, as a share of its amplitude at a divide
@@ -110,6 +133,7 @@ public record DrainageSettings(
 		double hackExponent,
 		double slopeAreaExponent,
 		double gradientScale,
+		double channelGradientScale,
 		double floodplainWidthFactor,
 		double hillslopeExponent,
 		double detailFloorFraction,
@@ -147,7 +171,8 @@ public record DrainageSettings(
 				75.0,         // junctionAngleMaxDegrees
 				0.57,         // hackExponent
 				0.5,          // slopeAreaExponent
-				0.010,        // gradientScale
+				0.060,        // gradientScale
+				0.0005,       // channelGradientScale
 				0.35,         // floodplainWidthFactor
 				1.0,          // hillslopeExponent
 				0.15,         // detailFloorFraction
@@ -156,6 +181,47 @@ public record DrainageSettings(
 				2_000.0,      // bucketSizeBlocks
 				1_024,        // basinCacheLimit
 				4_096);       // creekCacheLimit
+	}
+
+	/**
+	 * A copy with one value changed, so a sweep does not have to restate the other
+	 * twenty-two. Restating them is how a swept constant quietly ends up applied to the
+	 * wrong field.
+	 */
+	public DrainageSettings withChannelGradient(final double scale) {
+		return new DrainageSettings(
+				provinceLatticeBlocks, provinceTileBlocks, provinceMarginBlocks,
+				basinLatticeBlocks, baseLevelY, channelSpacingTargetBlocks,
+				creekSpacingBlocks, creekLevels, bifurcationRatio, lengthRatio,
+				junctionAngleMinDegrees, junctionAngleMaxDegrees, hackExponent,
+				slopeAreaExponent, gradientScale, scale, floodplainWidthFactor,
+				hillslopeExponent, detailFloorFraction, evaporationFactor,
+				closedBasinMinDepthBlocks, bucketSizeBlocks, basinCacheLimit,
+				creekCacheLimit);
+	}
+
+	public DrainageSettings withCreekGradient(final double scale) {
+		return new DrainageSettings(
+				provinceLatticeBlocks, provinceTileBlocks, provinceMarginBlocks,
+				basinLatticeBlocks, baseLevelY, channelSpacingTargetBlocks,
+				creekSpacingBlocks, creekLevels, bifurcationRatio, lengthRatio,
+				junctionAngleMinDegrees, junctionAngleMaxDegrees, hackExponent,
+				slopeAreaExponent, scale, channelGradientScale, floodplainWidthFactor,
+				hillslopeExponent, detailFloorFraction, evaporationFactor,
+				closedBasinMinDepthBlocks, bucketSizeBlocks, basinCacheLimit,
+				creekCacheLimit);
+	}
+
+	public DrainageSettings withClosedBasinDepth(final double blocks) {
+		return new DrainageSettings(
+				provinceLatticeBlocks, provinceTileBlocks, provinceMarginBlocks,
+				basinLatticeBlocks, baseLevelY, channelSpacingTargetBlocks,
+				creekSpacingBlocks, creekLevels, bifurcationRatio, lengthRatio,
+				junctionAngleMinDegrees, junctionAngleMaxDegrees, hackExponent,
+				slopeAreaExponent, gradientScale, channelGradientScale,
+				floodplainWidthFactor, hillslopeExponent, detailFloorFraction,
+				evaporationFactor, blocks, bucketSizeBlocks, basinCacheLimit,
+				creekCacheLimit);
 	}
 
 	/** Province lattice cells across one tile plus both margins. */

@@ -280,6 +280,21 @@ public final class MapRenderer {
 		 */
 		LAKES,
 
+		/**
+		 * How far the carve has cut below the uplift budget, on its own ramp.
+		 *
+		 * <p>Exists because the greyscale layers cannot answer this. They stretch their
+		 * ramp over the world's full 2,048-block vertical range, so a valley 60 blocks
+		 * deep is three percent of the ramp and invisible, whether the carve is working
+		 * or doing nothing at all. That is an instrument problem, and it hid the fact
+		 * that channel beds were being read off the uplift surface and cutting nothing.
+		 *
+		 * <p>This renders the difference directly, scaled to the depths that actually
+		 * occur, so gorges, dissected uplands and uncut plains are told apart at a
+		 * glance.
+		 */
+		INCISION,
+
 		/** Temperature in degrees C, cold blue through white to hot red. */
 		TEMPERATURE,
 
@@ -529,6 +544,7 @@ public final class MapRenderer {
 			case DISCHARGE -> dischargeColour(world, field, worldX, worldZ, seaLevel, creeks);
 			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel, creeks);
 			case LAKES -> lakeColour(world, field, worldX, worldZ, minY, maxY, seaLevel, creeks);
+			case INCISION -> incisionColour(world, field, worldX, worldZ, seaLevel);
 			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
 			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
@@ -617,6 +633,28 @@ public final class MapRenderer {
 		float t = (float) world.drainage().sample(worldX, worldZ, creeks).hillslope();
 
 		return new Color(t, t, t).getRGB();
+	}
+
+	/** Cut depth at which the incision ramp saturates, in blocks. */
+	private static final double INCISION_FULL_BLOCKS = 120.0;
+
+	private static int incisionColour(
+			final TerrainModel.Snapshot world, final HeightField field,
+			final double worldX, final double worldZ, final int seaLevel) {
+		double height = field.heightAt(worldX, worldZ);
+
+		if (height <= seaLevel) {
+			return OCEAN.getRGB();
+		}
+
+		double cut = world.uplift().heightAt(worldX, worldZ) - height;
+
+		// Square root, because cut depth is as skewed as the discharge that drives it:
+		// a few gorges hundreds of blocks deep against a landscape of shallow valleys.
+		// A linear ramp would show the gorges and call everything else uncut.
+		double scaled = Math.min(1.0, Math.sqrt(Math.max(0.0, cut) / INCISION_FULL_BLOCKS));
+
+		return rampColour(MAGMA_RAMP, scaled).getRGB();
 	}
 
 	private static final Color LAKE_OVERFLOW = new Color(70, 150, 235);

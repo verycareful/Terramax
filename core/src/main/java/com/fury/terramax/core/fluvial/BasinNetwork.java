@@ -61,6 +61,15 @@ public final class BasinNetwork {
 	/** Water this shallow is not a lake. Below it a closed basin reads as a dry floor. */
 	private static final double PLAYA_DEPTH_BLOCKS = 1.0;
 
+	/**
+	 * Smallest drainage area used in the slope-area relation.
+	 *
+	 * <p>A floor, not a tuning value. The relation divides by the square root of area,
+	 * so as area approaches zero the slope approaches infinity and a cell carrying
+	 * almost no water would be handed a profile far above any ground it could sit on.
+	 */
+	private static final double MIN_PROFILE_AREA = 1.0e-6;
+
 	private final long outletKey;
 	private final DrainageSettings settings;
 	private final FlowLattice flow;
@@ -98,6 +107,7 @@ public final class BasinNetwork {
 	private double[] retention;
 	private double[] cellDeficit;
 	private double[] cellRain;
+	private double[] channelProfile;
 
 	private double[] lakeLevel;
 	private boolean[] terminalLake;
@@ -112,6 +122,10 @@ public final class BasinNetwork {
 	private int closedDepressions;
 	private int terminalSinks;
 	private int landCells = -1;
+	private double channelIncision;
+	private double deepestIncision;
+	private int deeplyIncised;
+	private int incisedCells;
 
 	public BasinNetwork(
 			final long outletKey, final HeightField uplift, final MoistureField moisture,
@@ -159,6 +173,8 @@ public final class BasinNetwork {
 
 		this.threshold = calibrateThreshold();
 
+		computeChannelProfile();
+
 		this.bucketSize = settings.bucketSizeBlocks();
 		this.bucketsX = Math.max(1, (int) Math.ceil(cellsX * spacing / bucketSize));
 		this.bucketsZ = Math.max(1, (int) Math.ceil(cellsZ * spacing / bucketSize));
@@ -183,6 +199,7 @@ public final class BasinNetwork {
 		cellRain = null;
 		depressionId = null;
 		terminalSink = null;
+		channelProfile = null;
 		flow.compact();
 	}
 
@@ -275,6 +292,26 @@ public final class BasinNetwork {
 		double area = landCells() * flow.spacing() * flow.spacing();
 
 		return area / length;
+	}
+
+	/**
+	 * Mean blocks a channel has cut below the ground it runs through.
+	 *
+	 * <p>Measured at the channel itself, so it isolates what the profile does from what
+	 * the uplift surface was already doing. The share of land the finished carve removes
+	 * depends on both and is measured separately.
+	 */
+	public double meanChannelIncision() {
+		return incisedCells == 0 ? 0.0 : channelIncision / incisedCells;
+	}
+
+	public double deepestIncision() {
+		return deepestIncision;
+	}
+
+	/** Share of channel cells cut more than ten blocks into their own ground. */
+	public double deeplyIncisedShare() {
+		return incisedCells == 0 ? 0.0 : (double) deeplyIncised / incisedCells;
 	}
 
 	/** True when every channel descends from source to mouth, which is the invariant. */
@@ -804,6 +841,68 @@ public final class BasinNetwork {
 		return sorted[Math.max(0, Math.min(count - 1, cut))];
 	}
 
+	/**
+	 * The elevation each channel would settle at, integrated upstream from its outlet.
+	 *
+	 * <p><b>This is what makes rivers cut.</b> Reading a bed off the uplift surface, as
+	 * this first did, leaves the carve interpolating between uplift-derived values with
+	 * no way to go below them: measured, it removed a mean of 4.7 blocks and cut more
+	 * than 10 blocks on 8 percent of land. Uplift was being copied, not spent.
+	 *
+	 * <p>A profile integrated from base level does not know or care what the ground is
+	 * doing. It rises inland at the rate the slope-area relation gives, steeply where
+	 * little water passes and gently where much does, which is why real river profiles
+	 * are concave. Where uplift stands far above it the river has a gorge to cut; where
+	 * the ground already lies near it there is nothing to remove.
+	 *
+	 * <p>Walked in forward pop order, which reaches a cell after the cell it drains
+	 * into, so the downstream elevation is always already known.
+	 *
+	 * <p>Discharge is floored at the channel threshold. Without a floor the relation
+	 * sends slope to infinity as drainage area goes to zero, and a hillslope cell with
+	 * almost no flow would be assigned a profile kilometres above its own ground.
+	 */
+	private void computeChannelProfile() {
+		int size = flow.size();
+		channelProfile = new double[size];
+
+		int[] processOrder = flow.processOrder();
+		double spacing = flow.spacing();
+		double diagonal = spacing * Math.sqrt(2.0);
+		double floorArea = Math.max(threshold, MIN_PROFILE_AREA);
+
+		for (int rank = 0; rank < size; rank++) {
+			int i = processOrder[rank];
+			int next = flow.downstream(i);
+
+			if (next < 0) {
+				channelProfile[i] = flow.surface(i);
+				continue;
+			}
+
+			boolean straight = flow.cellX(i) == flow.cellX(next)
+					|| flow.cellZ(i) == flow.cellZ(next);
+			double run = straight ? spacing : diagonal;
+			double area = Math.max(floorArea, flow.accumulated(i));
+			double slope = settings.channelGradientScale()
+					* Math.pow(area, -settings.slopeAreaExponent());
+
+			channelProfile[i] = channelProfile[next] + run * slope;
+		}
+	}
+
+	/**
+	 * The channel bed: the lower of the equilibrium profile and the ground.
+	 *
+	 * <p>A river cannot run above its own valley, so the profile is capped at the
+	 * surface. It is capped at the <i>unfilled</i> surface rather than the filled one,
+	 * because inside a depression the filled level is the water and the bed is the
+	 * ground beneath it. Carving to the water would turn every lake into a plateau.
+	 */
+	private double bedAt(final int i) {
+		return Math.min(channelProfile[i], flow.surface(i));
+	}
+
 	private void buildChannels() {
 		int size = flow.size();
 		boolean[] channel = new boolean[size];
@@ -998,20 +1097,25 @@ public final class BasinNetwork {
 			segX1[segments] = pointX[next];
 			segZ1[segments] = pointZ[next];
 
-			// The bed, not the water surface.
+			// The bed the river has cut to, not the water surface and not the raw
+			// ground.
 			//
-			// These two are the same everywhere except inside a depression, where the
-			// fill raised the water above the ground. The carve interpolates the ground
-			// from here up to the divide, so handing it the water surface fills the
-			// valley with rock to lake level and turns every lake into a plateau. It
-			// also made the inversion guard fire on a fifth of all samples, because the
-			// water surface genuinely does stand above the uplift budget at those cells.
-			//
-			// Monotonicity is not lost by this. It was never a property of the bed: a
-			// lake bed dips below its own outlet, which is what makes it a lake. The
-			// invariant belongs to the water surface and is checked there.
-			segE0[segments] = flow.surface(i);
-			segE1[segments] = flow.surface(next);
+			// Monotonicity is not a property of this. It never was: a lake bed dips
+			// below its own outlet, which is what makes it a lake. The invariant belongs
+			// to the water surface and is checked there.
+			double bed = bedAt(i);
+			double cut = flow.surface(i) - bed;
+
+			incisedCells++;
+			channelIncision += cut;
+			deepestIncision = Math.max(deepestIncision, cut);
+
+			if (cut > 10.0) {
+				deeplyIncised++;
+			}
+
+			segE0[segments] = bed;
+			segE1[segments] = bedAt(next);
 			segDischarge[segments] = flow.accumulated(i);
 			segOrder[segments] = order[i];
 			segStream[segments] = stream[i];
