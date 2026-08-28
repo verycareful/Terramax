@@ -61,11 +61,12 @@ public final class CreekTrees {
 	/**
 	 * Marks a stream id as belonging to a creek rather than to a tier 2 channel.
 	 *
-	 * <p>Creek ids are hashed from position and trunk ids are small counters, so without
-	 * a separating bit a creek could be handed the same id as a trunk and the divide
-	 * between them would vanish.
+	 * <p>Creek ids are hashed from position and trunk ids pack an outlet cell with a
+	 * counter, so without a separating bit a creek could be handed the same id as a trunk
+	 * and the divide between them would vanish. Bit 62, because {@code BasinNetwork}
+	 * leaves it clear and both schemes want bit 63 clear so ids stay positive.
 	 */
-	private static final int CREEK_STREAM_MARK = 0x4000_0000;
+	private static final long CREEK_STREAM_MARK = 0x4000_0000_0000_0000L;
 
 	/** How far a creek wanders per step, as a fraction of the step length. */
 	private static final double WANDER = 0.22;
@@ -73,9 +74,30 @@ public final class CreekTrees {
 	private final long seed;
 	private final HeightField uplift;
 	private final DrainageSettings settings;
-	private final Map<Long, Patch> patches = new ConcurrentHashMap<>();
-	private final java.util.Queue<Long> order =
+	private final Map<PatchKey, Patch> patches = new ConcurrentHashMap<>();
+	private final java.util.Queue<PatchKey> order =
 			new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+	/**
+	 * Which patch of which basin.
+	 *
+	 * <p><b>The basin belongs in the key, and it was missing.</b> Patches were keyed by
+	 * cell alone but built from whichever basin the first caller happened to be standing
+	 * in. A patch is 8,000 blocks and a basin is often smaller, so a cell spans several
+	 * basins and the winner was decided by evaluation order: non-deterministic between
+	 * one render and the next, and between the simulator and the game. A patch built from
+	 * a basin that barely reaches it comes out nearly empty, which put creeks on one side
+	 * of a cell edge and none on the other.
+	 *
+	 * <p>That is why hashing creek stream identity from position, a real fix for a real
+	 * bug, left the seams exactly where they were. Identity was consistent; the set of
+	 * creeks was not.
+	 *
+	 * @param cell   patch cell, packed as {@link #patchKey}
+	 * @param outlet the basin whose trunks these creeks hang off
+	 */
+	private record PatchKey(long cell, long outlet) {
+	}
 
 	public CreekTrees(final long seed, final HeightField uplift, final DrainageSettings settings) {
 		this.seed = seed;
@@ -95,6 +117,36 @@ public final class CreekTrees {
 	}
 
 	/**
+	 * Offers every creek within reach of a column, across patch boundaries.
+	 *
+	 * <p><b>One patch is not enough, and it was the third confinement of the same kind.</b>
+	 * A patch holds only the segments that land inside its own 8,000-block box, so a
+	 * column standing near the edge cannot see a creek a hundred blocks away on the other
+	 * side of the line. The nearest creek changes discontinuously as the column crosses,
+	 * and so does the height. Keying patches by basin fixed which creeks exist; it could
+	 * not fix which of them a column is allowed to look at.
+	 *
+	 * <p>The search box spans at most two cells per axis, since the reach a creek can win
+	 * from is a quarter of a patch. Columns well inside a cell touch one patch and pay
+	 * nothing.
+	 */
+	public void mergeNear(
+			final double worldX, final double worldZ, final BasinNetwork basin,
+			final double radius, final BasinNetwork.Nearest out) {
+		int loX = (int) Math.floor((worldX - radius) / PATCH_BLOCKS);
+		int hiX = (int) Math.floor((worldX + radius) / PATCH_BLOCKS);
+		int loZ = (int) Math.floor((worldZ - radius) / PATCH_BLOCKS);
+		int hiZ = (int) Math.floor((worldZ + radius) / PATCH_BLOCKS);
+
+		for (int pz = loZ; pz <= hiZ; pz++) {
+			for (int px = loX; px <= hiX; px++) {
+				patch(new PatchKey(BasinIndex.packCell(px, pz), basin.outletKey()), basin)
+						.mergeNearest(worldX, worldZ, out);
+			}
+		}
+	}
+
+	/**
 	 * The creek patch covering a point, built once and shared.
 	 *
 	 * <p>Get-then-put rather than {@code computeIfAbsent}, as {@code MoistureField}
@@ -102,7 +154,10 @@ public final class CreekTrees {
 	 * bin lock across one would.
 	 */
 	public Patch patchAt(final double worldX, final double worldZ, final BasinNetwork basin) {
-		long key = patchKey(worldX, worldZ);
+		return patch(new PatchKey(patchKey(worldX, worldZ), basin.outletKey()), basin);
+	}
+
+	private Patch patch(final PatchKey key, final BasinNetwork basin) {
 		Patch cached = patches.get(key);
 
 		if (cached != null) {
@@ -119,7 +174,7 @@ public final class CreekTrees {
 			// render must not hold every patch it ever touched. Patches are small, so
 			// the limit is large and eviction is rare in play.
 			while (patches.size() > settings.creekCacheLimit()) {
-				Long oldest = order.poll();
+				PatchKey oldest = order.poll();
 
 				if (oldest == null) {
 					break;
@@ -132,9 +187,9 @@ public final class CreekTrees {
 		return existing != null ? existing : built;
 	}
 
-	private Patch build(final long key, final BasinNetwork basin) {
-		double originX = BasinIndex.unpackCellX(key) * PATCH_BLOCKS;
-		double originZ = BasinIndex.unpackCellZ(key) * PATCH_BLOCKS;
+	private Patch build(final PatchKey key, final BasinNetwork basin) {
+		double originX = BasinIndex.unpackCellX(key.cell()) * PATCH_BLOCKS;
+		double originZ = BasinIndex.unpackCellZ(key.cell()) * PATCH_BLOCKS;
 
 		Builder builder = new Builder(originX, originZ);
 
@@ -186,7 +241,7 @@ public final class CreekTrees {
 		private double[] e1 = new double[256];
 		private double[] discharge = new double[256];
 		private int[] order = new int[256];
-		private int[] stream = new int[256];
+		private long[] stream = new long[256];
 		private int count;
 
 		private int branches;
@@ -282,7 +337,7 @@ public final class CreekTrees {
 		private void grow(
 				final double fromX, final double fromZ, final double fromElevation,
 				final double angle, final double length, final double area,
-				final int branchOrder, final int levelsLeft, final int streamId) {
+				final int branchOrder, final int levelsLeft, final long streamId) {
 			if (levelsLeft <= 0 || length < settings.creekSpacingBlocks() * 0.15) {
 				return;
 			}
@@ -393,16 +448,16 @@ public final class CreekTrees {
 		 * creek. Every patch that sees it agrees, because they are all asking the same
 		 * question about the same place.
 		 */
-		private int streamIdAt(final double worldX, final double worldZ) {
+		private long streamIdAt(final double worldX, final double worldZ) {
 			long hash = Hashing.hash(seed, Math.round(worldX), Math.round(worldZ), SALT_STREAM);
 
-			return CREEK_STREAM_MARK | (int) (hash & 0x3FFF_FFFFL);
+			return CREEK_STREAM_MARK | hash & 0x3FFF_FFFF_FFFF_FFFFL;
 		}
 
 		private void add(
 				final double ax, final double az, final double bx, final double bz,
 				final double ae, final double be, final double flow,
-				final int branchOrder, final int streamId) {
+				final int branchOrder, final long streamId) {
 			// Only what lands in this patch is kept. A creek is generated from its
 			// anchor's coordinates, so the part crossing into the next patch is
 			// regenerated identically there.
@@ -463,7 +518,7 @@ public final class CreekTrees {
 		private final double[] e1;
 		private final double[] discharge;
 		private final int[] order;
-		private final int[] stream;
+		private final long[] stream;
 
 		private final int branches;
 		private final int junctions;
@@ -474,7 +529,7 @@ public final class CreekTrees {
 
 		Patch(final double[] x0, final double[] z0, final double[] x1, final double[] z1,
 				final double[] e0, final double[] e1, final double[] discharge,
-				final int[] order, final int[] stream,
+				final int[] order, final long[] stream,
 				final int branches, final int junctions,
 				final double lengthSum, final double areaSum, final int[] perLevel,
 				final double[] hackSums) {
@@ -551,13 +606,13 @@ public final class CreekTrees {
 		 * trunk and a creek compete on equal terms and the divide comes out of whichever
 		 * two streams are genuinely closest.
 		 *
-		 * <p>Stream ids are offset past tier 2's so a creek can never be mistaken for the
-		 * trunk it hangs off. Without that a point in the crook between a river and its
-		 * own tributary would find one stream twice and report itself as a divide.
+		 * <p>Stream ids carry their own marker bit rather than being offset past tier 2's,
+		 * so a creek can never be mistaken for the trunk it hangs off. Without that a point
+		 * in the crook between a river and its own tributary would find one stream twice and
+		 * report itself as a divide.
 		 */
 		public void mergeNearest(
-				final double worldX, final double worldZ,
-				final int streamOffset, final BasinNetwork.Nearest out) {
+				final double worldX, final double worldZ, final BasinNetwork.Nearest out) {
 			for (int s = 0; s < x0.length; s++) {
 				double dx = x1[s] - x0[s];
 				double dz = z1[s] - z0[s];
@@ -571,9 +626,9 @@ public final class CreekTrees {
 				double nearX = x0[s] + dx * t;
 				double nearZ = z0[s] + dz * t;
 				double distance = Math.hypot(worldX - nearX, worldZ - nearZ);
-				int id = streamOffset + stream[s];
 
-				out.offer(distance, id, e0[s] + (e1[s] - e0[s]) * t, discharge[s], order[s]);
+				out.offer(distance, stream[s], e0[s] + (e1[s] - e0[s]) * t,
+						discharge[s], order[s]);
 			}
 		}
 	}

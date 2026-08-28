@@ -1012,7 +1012,7 @@ public final class SimulatorMain {
 				world.terrain().meanInversionExcess(), world.terrain().worstInversionExcess());
 
 		printIncision(world, probeFlow, settings);
-		printSeamTest(world, settings);
+		printSeamTest(world, probeFlow, settings);
 		printChannelGradientSweep(world, network, basins, best, settings);
 		printCreekStatistics(world, network, settings);
 		printGradientSweep(world, network, settings);
@@ -1053,12 +1053,20 @@ public final class SimulatorMain {
 	}
 
 	/**
-	 * Tests whether terrain steps at tier 1 cell boundaries.
+	 * Tests whether terrain steps at tier 1 cell boundaries, and why.
 	 *
-	 * <p>Compares the height difference between column pairs that straddle a province
-	 * lattice boundary against pairs that do not, over the same distance. If basin
-	 * assignment is leaking into the shape of the world, straddling pairs jump and
-	 * interior pairs do not, and the ratio says so plainly.
+	 * <p>Basin identity is a lookup into an 8,000-block lattice, so it is a piecewise
+	 * constant function of position with its steps on that grid. Two columns four blocks
+	 * apart across a cell edge can therefore be handed different basins, different tier 2
+	 * solves, and different integrated channel profiles, which is a discontinuity in the
+	 * finished height wherever the cell edge is not the real divide.
+	 *
+	 * <p><b>Symptom and mechanism are measured separately, because the symptom alone
+	 * cannot tell them apart.</b> Terrain is genuinely rough, so a jump across a boundary
+	 * proves nothing on its own. The decisive comparison is between straddling pairs whose
+	 * basin changes and straddling pairs whose basin does not: same grid line, same
+	 * separation, same terrain, differing only in whether the lookup switched basins. If
+	 * only the switching pairs jump, the lattice is the cause and not a coincidence.
 	 *
 	 * <p>Worth measuring rather than asserting. The first explanation offered for the
 	 * rectangular seams was creek stream identity, which turned out to be a real bug that
@@ -1066,60 +1074,130 @@ public final class SimulatorMain {
 	 * seams exactly where they were.
 	 */
 	private static void printSeamTest(
-			final TerrainModel.Snapshot world, final DrainageSettings settings) {
+			final TerrainModel.Snapshot world, final FlowLattice flow,
+			final DrainageSettings settings) {
+		System.out.println();
+		System.out.printf("    SEAM TEST at the %,.0f-block province lattice%n",
+				settings.provinceLatticeBlocks());
+
+		seamAxis(world, flow, settings, true);
+		seamAxis(world, flow, settings, false);
+	}
+
+	/**
+	 * One axis of the seam test.
+	 *
+	 * <p>Both are run because the seams are rectangular. A step on one axis only would
+	 * mean something quite different from a step on both, and the two share every line of
+	 * this code apart from which coordinate the boundary lies on.
+	 */
+	private static void seamAxis(
+			final TerrainModel.Snapshot world, final FlowLattice flow,
+			final DrainageSettings settings, final boolean alongX) {
 		double lattice = settings.provinceLatticeBlocks();
 		double step = 4.0;
 
-		double straddleSum = 0.0;
-		double straddleWorst = 0.0;
-		int straddleCount = 0;
-		double interiorSum = 0.0;
-		double interiorWorst = 0.0;
-		int interiorCount = 0;
+		double minX = flow.worldX(0);
+		double maxX = flow.worldX(flow.width() - 1);
+		double minZ = flow.worldZ(0);
+		double maxZ = flow.worldZ(flow.depth() - 1);
 
-		double baseZ = -330_000.0;
+		double boundaryMin = alongX ? minX : minZ;
+		double boundaryMax = alongX ? maxX : maxZ;
+		double laneMin = alongX ? minZ : minX;
+		double laneMax = alongX ? maxZ : maxX;
 
-		for (int cell = 0; cell < 24; cell++) {
-			double boundary = Math.floor(120_000.0 / lattice + cell) * lattice;
+		// Accumulators, in four groups: every straddling pair, the ones whose basin
+		// changed, the ones whose basin did not, and an interior control at mid-cell.
+		double[] sum = new double[4];
+		double[] worst = new double[4];
+		int[] count = new int[4];
+		double bedJumpSum = 0.0;
+		double bedJumpWorst = 0.0;
 
-			for (int lane = 0; lane < 8; lane++) {
-				double z = baseZ + lane * 900.0;
+		for (long cell = (long) Math.ceil(boundaryMin / lattice);
+				cell <= (long) Math.floor(boundaryMax / lattice); cell++) {
+			double boundary = cell * lattice;
 
-				if (world.terrain().heightAt(boundary, z) <= MapPanel.SEA_LEVEL) {
+			for (double lane = laneMin; lane <= laneMax; lane += lattice * 0.25) {
+				double aX = alongX ? boundary - step * 0.5 : lane;
+				double aZ = alongX ? lane : boundary - step * 0.5;
+				double bX = alongX ? boundary + step * 0.5 : lane;
+				double bZ = alongX ? lane : boundary + step * 0.5;
+
+				// Land only. Below base level the nearest channel is inland and above, so
+				// ocean pairs would report the coastline rather than a seam.
+				if (world.uplift().heightAt(aX, aZ) <= settings.baseLevelY()
+						|| world.uplift().heightAt(bX, bZ) <= settings.baseLevelY()) {
 					continue;
 				}
 
-				// Straddling: one column each side of the boundary.
-				double jump = Math.abs(world.terrain().heightAt(boundary + step * 0.5, z)
-						- world.terrain().heightAt(boundary - step * 0.5, z));
-				straddleSum += jump;
-				straddleWorst = Math.max(straddleWorst, jump);
-				straddleCount++;
+				double jump = Math.abs(world.terrain().heightAt(bX, bZ)
+						- world.terrain().heightAt(aX, aZ));
+				boolean switched = world.drainage().basins().outletAt(aX, aZ)
+						!= world.drainage().basins().outletAt(bX, bZ);
 
-				// Interior: the same separation, well away from any boundary.
+				sum[0] += jump;
+				worst[0] = Math.max(worst[0], jump);
+				count[0]++;
+
+				int group = switched ? 1 : 2;
+				sum[group] += jump;
+				worst[group] = Math.max(worst[group], jump);
+				count[group]++;
+
+				if (switched) {
+					double bedJump = Math.abs(
+							world.drainage().sample(bX, bZ).channelElevation()
+									- world.drainage().sample(aX, aZ).channelElevation());
+					bedJumpSum += bedJump;
+					bedJumpWorst = Math.max(bedJumpWorst, bedJump);
+				}
+
+				// The control: the same separation and the same lane, half a cell away
+				// from any boundary, so it carries the terrain's own roughness and nothing
+				// else. Whatever this reads is the number a seam has to beat.
 				double inside = boundary + lattice * 0.5;
-				double flat = Math.abs(world.terrain().heightAt(inside + step * 0.5, z)
-						- world.terrain().heightAt(inside - step * 0.5, z));
-				interiorSum += flat;
-				interiorWorst = Math.max(interiorWorst, flat);
-				interiorCount++;
+				double cX = alongX ? inside - step * 0.5 : lane;
+				double cZ = alongX ? lane : inside - step * 0.5;
+				double dX = alongX ? inside + step * 0.5 : lane;
+				double dZ = alongX ? lane : inside + step * 0.5;
+
+				if (world.uplift().heightAt(cX, cZ) <= settings.baseLevelY()
+						|| world.uplift().heightAt(dX, dZ) <= settings.baseLevelY()) {
+					continue;
+				}
+
+				double flat = Math.abs(world.terrain().heightAt(dX, dZ)
+						- world.terrain().heightAt(cX, cZ));
+				sum[3] += flat;
+				worst[3] = Math.max(worst[3], flat);
+				count[3]++;
 			}
 		}
 
-		double straddleMean = straddleCount == 0 ? 0.0 : straddleSum / straddleCount;
-		double interiorMean = interiorCount == 0 ? 0.0 : interiorSum / interiorCount;
+		double switchedMean = mean(sum[1], count[1]);
+		double sameMean = mean(sum[2], count[2]);
+		double interiorMean = mean(sum[3], count[3]);
 
-		System.out.println();
-		System.out.printf("    SEAM TEST at the %,.0f-block province lattice, over %d pairs%n",
-				lattice, straddleCount);
-		System.out.printf("      across a boundary  mean %.2f blocks, worst %.1f%n",
-				straddleMean, straddleWorst);
-		System.out.printf("      inside a cell      mean %.2f blocks, worst %.1f%n",
-				interiorMean, interiorWorst);
-		System.out.printf("      ratio              %.1fx%s%n",
-				interiorMean <= 0.0 ? 0.0 : straddleMean / interiorMean,
-				interiorMean > 0.0 && straddleMean / interiorMean > 3.0
-						? "   *** terrain steps at basin boundaries" : "   [no step]");
+		System.out.printf("      %s boundaries, %,d land pairs, basin switched on %.1f%%%n",
+				alongX ? "east-west " : "north-south", count[0],
+				count[0] == 0 ? 0.0 : 100.0 * count[1] / count[0]);
+		System.out.printf("        basin switched     mean %6.2f blocks, worst %7.1f   "
+				+ "(bed jump mean %.1f, worst %.1f)%n",
+				switchedMean, worst[1], mean(bedJumpSum, count[1]), bedJumpWorst);
+		System.out.printf("        basin unchanged    mean %6.2f blocks, worst %7.1f%n",
+				sameMean, worst[2]);
+		System.out.printf("        mid-cell control   mean %6.2f blocks, worst %7.1f%n",
+				interiorMean, worst[3]);
+		System.out.printf("        switched / control %.1fx%s%n",
+				interiorMean <= 0.0 ? 0.0 : switchedMean / interiorMean,
+				interiorMean > 0.0 && switchedMean / interiorMean > 3.0
+						? "   *** terrain steps where basin identity changes" : "   [no step]");
+	}
+
+	private static double mean(final double total, final int count) {
+		return count == 0 ? 0.0 : total / count;
 	}
 
 	/**

@@ -12,10 +12,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The only type {@code TerrainHeight} talks to. Which tier answered, and how many
  * lattices had to be solved to get there, is nobody else's concern.
  *
- * <p>A column resolves in three steps: tier 1 gives the outlet, the outlet gives the
- * basin solve, and the basin's spatial index gives the two nearest channels. Keying the
- * middle step by outlet rather than by position is what makes the answer stable, since
- * every column in a basin reaches the identical solve.
+ * <p>A column resolves in three steps: tier 1 gives the outlets in reach, each outlet
+ * gives a basin solve, and every basin's spatial index offers into one shared search.
+ * Keying the middle step by outlet rather than by position is what makes each solve
+ * stable, since every column in a basin reaches the identical one.
+ *
+ * <p><b>Plural, and it was singular.</b> Searching only the basin the lattice assigned
+ * made the finished height a step function on the 8,000-block assignment grid: columns
+ * four blocks apart across a grid line differed by 9.4 blocks on average against 1.8 in
+ * open ground, drawing rectangular seams across the whole world. Offering every basin
+ * in reach removes the dependence on which basin was assigned, so position is the only
+ * thing the answer depends on.
  */
 public final class DrainageMap {
 	private final HeightField uplift;
@@ -52,6 +59,9 @@ public final class DrainageMap {
 	/** Reused per thread. The query runs for every column and must not allocate. */
 	private final ThreadLocal<BasinNetwork.Nearest> scratch =
 			ThreadLocal.withInitial(BasinNetwork.Nearest::new);
+
+	/** The distinct basins in reach of one column. Nine probes, so at most nine. */
+	private final ThreadLocal<long[]> reach = ThreadLocal.withInitial(() -> new long[9]);
 
 	public DrainageMap(
 			final long seed, final HeightField uplift, final MoistureField moisture,
@@ -163,11 +173,20 @@ public final class DrainageMap {
 				? settings.creekSpacingBlocks() * 0.5
 				: settings.channelSpacingTargetBlocks() * 0.5);
 
-		network.offerNear(worldX, worldZ, nearest);
+		long[] basinsInReach = reach.get();
+		int found = gatherReach(worldX, worldZ, network.outletKey(), basinsInReach);
 
-		if (withCreeks) {
-			creeks.patchAt(worldX, worldZ, network)
-					.mergeNearest(worldX, worldZ, network.streamCount(), nearest);
+		for (int i = 0; i < found; i++) {
+			BasinNetwork other = basinsInReach[i] == network.outletKey()
+					? network
+					: network(basinsInReach[i]);
+
+			other.offerNear(worldX, worldZ, nearest);
+
+			if (withCreeks) {
+				creeks.mergeNear(worldX, worldZ, other,
+						settings.creekSpacingBlocks() * 0.5, nearest);
+			}
 		}
 
 		if (!nearest.found()) {
@@ -179,6 +198,11 @@ public final class DrainageMap {
 					network.lakeSurfaceAt(worldX, worldZ), network.endorheicAt(worldX, worldZ));
 		}
 
+		// Channels come from every basin in reach; standing water comes from the one
+		// the point is in. A lake belongs to a single basin by definition, since it is
+		// the flooded part of one depression, so there is nothing to merge. The step at a
+		// basin boundary is a step between one lake and no lake, which is what a shoreline
+		// is.
 		return new DrainageSample(
 				nearest.elevation1,
 				nearest.distance1,
@@ -187,6 +211,59 @@ public final class DrainageMap {
 				nearest.hillslope(),
 				network.lakeSurfaceAt(worldX, worldZ),
 				network.endorheicAt(worldX, worldZ));
+	}
+
+	/**
+	 * The distinct basins whose channels could be the nearest to a column.
+	 *
+	 * <p><b>A column is not confined to the basin the lattice assigned it, and this is
+	 * what removes the seam.</b> Basin identity is a lookup into an 8,000-block grid, so
+	 * it is a step function with its steps on that grid rather than on any divide.
+	 * Searching only the assigned basin made the finished height a step function too:
+	 * measured at a mean jump of 9.4 blocks between columns four blocks apart across a
+	 * grid line, against 1.8 blocks in open ground.
+	 *
+	 * <p>Offering every basin in reach into one search makes the answer a function of
+	 * position alone. The transition now falls where the two nearest streams are
+	 * genuinely equidistant, which is the divide, and {@code hillslope} reaches 1 there
+	 * on both sides because it can finally see both streams. Continuous by construction
+	 * rather than by smoothing.
+	 *
+	 * <p>Probed at the search radius rather than at every neighbouring cell, since a
+	 * channel further away than that cannot win. Adjacent cells share an outlet about
+	 * three quarters of the time, so the common case costs nine lattice lookups and one
+	 * basin, not nine basins.
+	 */
+	private int gatherReach(
+			final double worldX, final double worldZ, final long home, final long[] out) {
+		double radius = settings.channelSpacingTargetBlocks() * 0.5;
+
+		out[0] = home;
+		int found = 1;
+
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				if (dx == 0 && dz == 0) {
+					continue;
+				}
+
+				long key = basins.outletAt(worldX + dx * radius, worldZ + dz * radius);
+				boolean seen = false;
+
+				for (int i = 0; i < found; i++) {
+					if (out[i] == key) {
+						seen = true;
+						break;
+					}
+				}
+
+				if (!seen) {
+					out[found++] = key;
+				}
+			}
+		}
+
+		return found;
 	}
 
 	/**

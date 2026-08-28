@@ -203,6 +203,29 @@ public final class BasinNetwork {
 		flow.compact();
 	}
 
+	/**
+	 * This basin's local stream number as an identity the whole world agrees on.
+	 *
+	 * <p><b>Local numbers are counters, and counters collide.</b> Stream three in one
+	 * basin and stream three in the next are unrelated rivers, and the nearest-channel
+	 * search keeps the two nearest <i>distinct</i> streams. Now that a column offers
+	 * channels from every basin within reach, two colliding ids would be taken for one
+	 * river, the second distance would never be recorded, and the divide between two
+	 * neighbouring basins would read as a channel instead. Exactly where the answer has
+	 * to be continuous is where it would break.
+	 *
+	 * <p>Packing the outlet cell alongside the local number is exact rather than hashed.
+	 * Twenty bits per axis covers cells out to plus or minus 4.2 billion blocks and
+	 * twenty-two bits covers four million streams in one basin, which leaves bit 62 free
+	 * for tier 3 to mark its own and bit 63 clear so every id is positive.
+	 */
+	public long streamKey(final int localStream) {
+		long cellX = BasinIndex.unpackCellX(outletKey) & 0xFFFFFL;
+		long cellZ = BasinIndex.unpackCellZ(outletKey) & 0xFFFFFL;
+
+		return (localStream & 0x3FFFFFL) << 40 | cellX << 20 | cellZ;
+	}
+
 	public long outletKey() {
 		return outletKey;
 	}
@@ -1215,14 +1238,65 @@ public final class BasinNetwork {
 		int bx = bucketIndex(worldX - originX, bucketsX);
 		int bz = bucketIndex(worldZ - originZ, bucketsZ);
 
-		search(worldX, worldZ, bx, bz, 1, out);
+		// Widened until the answer is certain, not until something is found.
+		//
+		// <b>A fixed ring is a cell the query is confined to, and it drew rectangles.</b>
+		// Searching one ring covers only the bucket block around the point, so a column
+		// near the edge of that block misses a channel just outside it while a column a
+		// few blocks away does not. Widening only when nothing at all was found made it
+		// worse: whole regions of sparse channel either took the narrow answer or the wide
+		// one, with a hard rectangular boundary between them on the bucket grid. Those
+		// rectangles were the visible artefact on the incision layer all along, and they
+		// are not the province seam they were recorded as.
+		//
+		// Stopping when the covered radius exceeds the distance found makes the result
+		// independent of where the bucket lines happen to fall, which is the same property
+		// the basin union buys at the tier above.
+		int limit = Math.max(1, (int) Math.ceil(
+				settings.channelSpacingTargetBlocks() / bucketSize) + 1);
 
-		// A basin interior with sparse channels can legitimately have nothing in the
-		// immediate neighbourhood. Widen once rather than reporting no channel, which
-		// the carve would read as a divide.
-		if (out.distance1 == Double.MAX_VALUE) {
-			search(worldX, worldZ, bx, bz, 4, out);
+		for (int radius = 1; radius <= limit; radius++) {
+			search(worldX, worldZ, bx, bz, radius, out);
+
+			// Beyond half the target spacing the second distance no longer moves
+			// hillslope, which saturates at 1, so there is nothing left to buy.
+			double needed = Math.min(out.distance2, out.fallbackHalfSpacing());
+
+			if (needed <= covered(worldX, worldZ, bx, bz, radius)) {
+				return;
+			}
 		}
+	}
+
+	/**
+	 * How far from a point the searched bucket block reaches on its nearest side.
+	 *
+	 * <p>Anything closer than this has certainly been seen. A side that runs off the
+	 * lattice is not a limit at all, since there are no channels beyond it, so it is left
+	 * out of the minimum rather than counted as a near edge.
+	 */
+	private double covered(
+			final double worldX, final double worldZ,
+			final int bx, final int bz, final int radius) {
+		double reach = Double.MAX_VALUE;
+
+		if (bx - radius > 0) {
+			reach = Math.min(reach, worldX - (originX + (bx - radius) * bucketSize));
+		}
+
+		if (bx + radius < bucketsX - 1) {
+			reach = Math.min(reach, originX + (bx + radius + 1) * bucketSize - worldX);
+		}
+
+		if (bz - radius > 0) {
+			reach = Math.min(reach, worldZ - (originZ + (bz - radius) * bucketSize));
+		}
+
+		if (bz + radius < bucketsZ - 1) {
+			reach = Math.min(reach, originZ + (bz + radius + 1) * bucketSize - worldZ);
+		}
+
+		return reach;
 	}
 
 	private void search(
@@ -1265,21 +1339,10 @@ public final class BasinNetwork {
 
 		out.offer(
 				Math.hypot(worldX - nearestX, worldZ - nearestZ),
-				segStream[s],
+				streamKey(segStream[s]),
 				segE0[s] + (segE1[s] - segE0[s]) * t,
 				segDischarge[s],
 				segOrder[s]);
-	}
-
-	/** How many distinct streams this basin holds, so tier 3 can number past them. */
-	public int streamCount() {
-		int highest = -1;
-
-		for (int s = 0; s < segments; s++) {
-			highest = Math.max(highest, segStream[s]);
-		}
-
-		return highest + 1;
 	}
 
 	/**
@@ -1339,8 +1402,11 @@ public final class BasinNetwork {
 		public double elevation1;
 		public double discharge1;
 		public int order1;
-		public int stream1;
-		public int stream2;
+		public long stream1;
+		public long stream2;
+
+		/** No stream yet. Negative, and every real id is positive, so it cannot collide. */
+		public static final long NO_STREAM = -1L;
 
 		/** Half the spacing channels are targeted at, used when only one stream is near. */
 		private double fallbackHalfSpacing = 3_000.0;
@@ -1351,12 +1417,16 @@ public final class BasinNetwork {
 			elevation1 = 0.0;
 			discharge1 = 0.0;
 			order1 = 0;
-			stream1 = -1;
-			stream2 = -1;
+			stream1 = NO_STREAM;
+			stream2 = NO_STREAM;
 		}
 
 		public void fallbackHalfSpacing(final double blocks) {
 			this.fallbackHalfSpacing = blocks;
+		}
+
+		public double fallbackHalfSpacing() {
+			return fallbackHalfSpacing;
 		}
 
 		/**
@@ -1373,7 +1443,7 @@ public final class BasinNetwork {
 		 * of the same river, which says nothing about where a divide is.
 		 */
 		public void offer(
-				final double distance, final int stream,
+				final double distance, final long stream,
 				final double elevation, final double flow, final int channelOrder) {
 			if (distance < distance1) {
 				if (stream != stream1) {
