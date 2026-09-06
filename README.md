@@ -1,4 +1,17 @@
 # Terramax
+<!-- Language & platform -->
+[![Java](https://img.shields.io/badge/Java-25+-ED8B00?style=flat-square&logo=openjdk&logoColor=white)](https://openjdk.org/)
+[![Minecraft](https://img.shields.io/badge/Minecraft-26.2-62B47A?style=flat-square&logo=minecraft&logoColor=white)](https://www.minecraft.net/)
+<!-- Mod toolchain. Fabric and Loom have no shields.io logos; swap for logo badges if any appear. -->
+[![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.19.3-DBD0B4?style=flat-square)](https://fabricmc.net/)
+[![Fabric API](https://img.shields.io/badge/Fabric%20API-0.156.0%2B26.2-DBD0B4?style=flat-square)](https://github.com/FabricMC/fabric)
+[![Fabric Loom](https://img.shields.io/badge/Fabric%20Loom-1.17--SNAPSHOT-DBD0B4?style=flat-square)](https://github.com/FabricMC/fabric-loom)
+<!-- Build -->
+[![Gradle](https://img.shields.io/badge/Gradle-9.5.1-02303A?style=flat-square&logo=gradle&logoColor=white)](https://gradle.org/)
+<!-- Project -->
+[![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)](gradle.properties)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE.txt)
+[![Status: Early Development](https://img.shields.io/badge/Status-Early%20Development-orange?style=flat-square)](.)
 
 A Fabric mod for Minecraft **26.2** that generates worlds from a simulated tectonic plate model, then places grounded, earthlike biomes on the terrain it produces.
 
@@ -30,18 +43,6 @@ If `JAVA_HOME` points at an older JDK, override it for the invocation rather tha
 JAVA_HOME=/path/to/jdk-25 ./gradlew build
 ```
 
-## Repository layout
-
-```
-src/main/java/com/fury/terramax/
-├── biome/      biome definitions: surface, tints, features, spawns
-└── command/    development commands
-
-src/main/generated/    datagen output, committed
-```
-
-The terrain work introduces a three-module split (`core`, `sim`, `mod`). `core` will hold the terrain mathematics with no Minecraft dependency, so a standalone simulator can render and tune it without launching the game. At 100,000-block plate spacing, in-game iteration is impractical: you would fly 50,000 blocks to reach a boundary.
-
 ## Development notes
 
 `/terramax locate <biome> [radius] [step]` searches far beyond vanilla's `/locate biome`, which hardcodes a 6400-block limit. That limit is unusable at Terramax's scales.
@@ -56,4 +57,12 @@ Terramax succeeds `realworld` (Minecraft 1.21.8), which enlarged vanilla's Large
 
 ## License
 
-Apache-2.0. See [LICENSE.txt](LICENSE.txt).
+Copyright © 2026 Sricharan Suresh (github.com/verycareful)
+
+Terramax is licensed under the **[Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)**.
+You may use, modify and redistribute it, including commercially, provided you
+retain the copyright and license notices, state any changes you made, and
+include a copy of the license. The license also grants an explicit patent
+licence from contributors, and provides the software without warranty.
+
+See the [LICENSE.txt](LICENSE.txt) file for the full license text.
