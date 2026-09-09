@@ -5,43 +5,52 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 
 import javax.swing.BorderFactory;
-import javax.swing.ButtonGroup;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
 import javax.swing.JTextField;
-import javax.swing.JToggleButton;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 
 /**
- * The simulator window: controls left, map centre, statistics and legend right,
- * cross section docked below, status bar underneath.
+ * The simulator window: map in the middle, one column of panels beside it, a cross
+ * section and a status line underneath.
  *
- * <p>Everything is visible at once because the tuning loop needs it to be. The loop
- * is: move a slider, watch the map, check whether the numbers moved the right way.
- * Hiding the numbers behind a tab, which the previous layout effectively did by only
- * printing them to the console, breaks the third step.
+ * <p><b>The map gets the room now.</b> There used to be a 300-pixel settings column
+ * pinned open on the left and a 250-pixel statistics column on the right, so the thing
+ * being looked at got whatever was left. Settings moved into the side column and start
+ * folded, because tuning a slider is a thing you do occasionally and looking at terrain
+ * is the thing you do constantly.
+ *
+ * <p>The panel that earns its place is {@link MeasurePanel}. Measurements used to live
+ * only on the command line, so checking a change meant running a batch in one program
+ * and hunting for what it described in another, with no way across. Now a probe runs
+ * against the window on screen and anything it locates becomes a button that moves the
+ * map there, at the scale that thing is visible at.
  */
 public final class ViewerFrame extends JFrame {
 	private static final int WINDOW_WIDTH = 1600;
 	private static final int WINDOW_HEIGHT = 1000;
 
+	/** Width of the column beside the map. Wide enough for a probe's fixed-width rows. */
+	private static final int SIDE_COLUMN_WIDTH = 330;
+
 	/**
 	 * Opening view, in blocks across. Sixty-four chunks.
 	 *
 	 * <p>It used to open on 140 crust cells, which is 840,000 blocks, and render them
-	 * at panel resolution: a million terrain columns, around forty seconds, before the
-	 * window drew anything at all. Nobody asked for that view and it was the first
-	 * thing anybody saw.
+	 * at panel resolution before drawing anything at all. Measured at 92 seconds to
+	 * first image. Nobody asked for that view and it was the first thing anybody saw.
 	 *
 	 * <p>A thousand blocks is close to one block per pixel, which is the scale terrain
 	 * detail actually exists at, and it is where somebody standing in the world would
-	 * be. Zooming out is one gesture and now costs no more than zooming in, so the wide
-	 * view is a thing you ask for rather than a thing you wait through.
+	 * be. Zooming out is one gesture away.
 	 */
 	private static final double INITIAL_SPAN_BLOCKS = 1_024.0;
 
@@ -51,36 +60,61 @@ public final class ViewerFrame extends JFrame {
 	private final transient LegendPanel legend = new LegendPanel();
 	private final transient SectionPanel section = new SectionPanel();
 	private final transient StatusBar status = new StatusBar();
-
+	private final transient MeasurePanel measure;
 
 	public ViewerFrame(final long seed) {
 		super("Terramax terrain simulator");
 
 		this.model = new TerrainModel(seed);
 		this.map = new MapPanel(model, new MapEvents(), INITIAL_SPAN_BLOCKS);
+		this.measure = new MeasurePanel(model, map::currentView,
+				place -> map.goTo(place.worldX(), place.worldZ(), place.spanBlocks()));
 
 		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 		setLayout(new BorderLayout());
 
 		add(toolbar(), BorderLayout.NORTH);
-		add(new ControlPanel(model, this::worldChanged), BorderLayout.WEST);
 		add(map, BorderLayout.CENTER);
-		add(rightColumn(), BorderLayout.EAST);
+		add(sideColumn(), BorderLayout.EAST);
 		add(bottom(), BorderLayout.SOUTH);
 
-		legend.showTerrainLayer(map.terrainLayer());
+		legend.showLayer(map.layer());
 
 		setSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 		setLocationRelativeTo(null);
 	}
 
-	private JPanel rightColumn() {
-		JPanel column = new JPanel(new BorderLayout());
-		column.setPreferredSize(new Dimension(250, 0));
-		column.add(statistics, BorderLayout.CENTER);
-		column.add(legend, BorderLayout.SOUTH);
+	/**
+	 * Everything that is not the map, in one folding column.
+	 *
+	 * <p>Order is how often you want each. Measure first because it is the reason to
+	 * have the viewer open, then what the current view measures out to, then the legend
+	 * for the layer, then settings, which start folded.
+	 */
+	private JScrollPane sideColumn() {
+		JPanel stack = new JPanel();
+		stack.setLayout(new BoxLayout(stack, BoxLayout.Y_AXIS));
+		stack.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-		return column;
+		stack.add(group("measure", true, measure));
+		stack.add(group("statistics", true, statistics));
+		stack.add(group("legend", true, legend));
+		stack.add(group("settings", false, new ControlPanel(model, this::worldChanged)));
+		stack.add(Box.createVerticalGlue());
+
+		JScrollPane scroll = new JScrollPane(stack);
+		scroll.setPreferredSize(new Dimension(SIDE_COLUMN_WIDTH, 0));
+		scroll.getVerticalScrollBar().setUnitIncrement(16);
+
+		return scroll;
+	}
+
+	private static CollapsibleGroup group(
+			final String title, final boolean open, final java.awt.Component content) {
+		CollapsibleGroup box = new CollapsibleGroup(title, open);
+		box.addControl(content);
+
+		return box;
 	}
 
 	private JPanel bottom() {
@@ -95,26 +129,7 @@ public final class ViewerFrame extends JFrame {
 		JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
 		bar.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
 
-		ButtonGroup modes = new ButtonGroup();
-
-		for (ViewerMode mode : ViewerMode.values()) {
-			JToggleButton button = new JToggleButton(mode.label());
-			button.setFocusPainted(false);
-			button.setSelected(mode == ViewerMode.PAN);
-			button.addActionListener(e -> {
-				map.setMode(mode);
-				status.showHint(mode);
-
-				if (mode != ViewerMode.SECTION) {
-					section.clear();
-				}
-			});
-
-			modes.add(button);
-			bar.add(button);
-		}
-
-		bar.add(new JLabel("     layer"));
+		bar.add(new JLabel("layer"));
 		bar.add(layerSelector());
 
 		bar.add(new JLabel("     seed"));
@@ -127,34 +142,37 @@ public final class ViewerFrame extends JFrame {
 	}
 
 	/**
-	 * One selector over both layer families.
+	 * One list of layers, grouped by what they are about.
 	 *
-	 * <p>Two separate combo boxes would let the user pick a plate layer and a terrain
-	 * layer at once, and then show neither of the two they chose.
+	 * <p>The two renderer enums used to be poured into a single combo box and taken
+	 * apart again with {@code instanceof}, which put twenty-one entries in declaration
+	 * order under the constant names the renderer happens to use. {@link MapLayer}
+	 * carries the category, so the list reads as plates, terrain, water, climate, with
+	 * an unselectable heading before each.
 	 */
 	private JComboBox<Object> layerSelector() {
 		DefaultComboBoxModel<Object> items = new DefaultComboBoxModel<>();
 
-		for (MapRenderer.TerrainLayer layer : MapRenderer.TerrainLayer.values()) {
-			items.addElement(layer);
-		}
+		for (MapLayer.Category category : MapLayer.Category.values()) {
+			items.addElement("-- " + category.label());
 
-		for (MapRenderer.Layer layer : MapRenderer.Layer.values()) {
-			items.addElement(layer);
+			for (MapLayer layer : MapLayer.of(category)) {
+				items.addElement(layer);
+			}
 		}
 
 		JComboBox<Object> box = new JComboBox<>(items);
-		box.setSelectedItem(map.terrainLayer());
+		box.setSelectedItem(map.layer());
 
 		box.addActionListener(e -> {
-			Object selected = box.getSelectedItem();
-
-			if (selected instanceof MapRenderer.TerrainLayer terrain) {
-				map.setTerrainLayer(terrain);
-				legend.showTerrainLayer(terrain);
-			} else if (selected instanceof MapRenderer.Layer plate) {
-				map.setLayer(plate);
-				legend.showPlateLayer(plate);
+			// A heading is not a layer. Selecting one puts the previous choice back,
+			// which is less surprising than leaving the box showing a heading while the
+			// map shows something else.
+			if (box.getSelectedItem() instanceof MapLayer chosen) {
+				map.setLayer(chosen);
+				legend.showLayer(chosen);
+			} else {
+				box.setSelectedItem(map.layer());
 			}
 		});
 
@@ -212,21 +230,13 @@ public final class ViewerFrame extends JFrame {
 
 		@Override
 		public void cursorLeft() {
-			status.showHint(map.mode());
+			status.showHint();
 		}
 
 		@Override
 		public void sectionDrawn(
 				final double startX, final double startZ, final double endX, final double endZ) {
 			section.plot(model.snapshot().terrain(), startX, startZ, endX, endZ);
-		}
-
-		@Override
-		public void pointProbed(final double worldX, final double worldZ) {
-			// The status bar already reports everything a probe would, live under the
-			// cursor. Centring on the point is the useful extra: it makes a probe a
-			// way to recentre precisely rather than a redundant readout.
-			map.goTo(worldX, worldZ);
 		}
 
 		@Override

@@ -9,7 +9,6 @@ import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import javax.swing.JScrollPane;
 import javax.swing.JSlider;
 
 import com.fury.terramax.core.plate.PlateMapSettings;
@@ -30,8 +29,6 @@ public final class ControlPanel extends JPanel {
 	/** Sliders work in integers, so fractional settings are scaled by this. */
 	private static final int PERCENT_SCALE = 100;
 
-	private static final int COLUMN_WIDTH = 300;
-
 	private final transient TerrainModel model;
 	private final transient Runnable onChange;
 
@@ -39,19 +36,22 @@ public final class ControlPanel extends JPanel {
 		this.model = model;
 		this.onChange = onChange;
 
-		JPanel stack = new JPanel();
-		stack.setLayout(new BoxLayout(stack, BoxLayout.Y_AXIS));
-		stack.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+		// No scroll pane and no fixed size of its own any more. This is now one folded
+		// section inside a column that scrolls, and a scroll pane nested in a scroll
+		// pane reports a preferred height of nothing, so the settings would have opened
+		// onto a sliver.
+		setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+		setBorder(BorderFactory.createEmptyBorder(4, 0, 4, 0));
 
-		stack.add(plateGroup());
-		stack.add(nucleiGroup());
-		stack.add(crustTypeGroup());
-		stack.add(regionGroup());
-		stack.add(javax.swing.Box.createVerticalGlue());
+		add(plateGroup());
+		add(nucleiGroup());
+		add(crustTypeGroup());
+		add(regionGroup());
+	}
 
-		setLayout(new java.awt.BorderLayout());
-		add(new JScrollPane(stack), java.awt.BorderLayout.CENTER);
-		setPreferredSize(new Dimension(COLUMN_WIDTH, 0));
+	@Override
+	public Dimension getMaximumSize() {
+		return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
 	}
 
 	private CollapsibleGroup plateGroup() {

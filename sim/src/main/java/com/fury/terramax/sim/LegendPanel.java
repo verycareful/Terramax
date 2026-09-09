@@ -37,15 +37,10 @@ public final class LegendPanel extends JPanel {
 		setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
 	}
 
-	public void showTerrainLayer(final MapRenderer.TerrainLayer layer) {
-		this.terrainLayer = layer;
-		this.plateLayer = null;
-		repaint();
-	}
-
-	public void showPlateLayer(final MapRenderer.Layer layer) {
-		this.plateLayer = layer;
-		this.terrainLayer = null;
+	/** Shows the key for whichever family the chosen layer belongs to. */
+	public void showLayer(final MapLayer layer) {
+		this.terrainLayer = layer.terrain();
+		this.plateLayer = layer.plate();
 		repaint();
 	}
 

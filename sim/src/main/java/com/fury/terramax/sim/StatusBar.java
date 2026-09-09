@@ -38,12 +38,20 @@ public final class StatusBar extends JPanel {
 		add(cursor, BorderLayout.WEST);
 		add(render, BorderLayout.EAST);
 
-		showHint(ViewerMode.PAN);
+		showHint();
 	}
 
-	/** Shown when the cursor is off the map, so the strip is never blank. */
-	public void showHint(final ViewerMode mode) {
-		cursor.setText(mode.label() + " mode:  " + mode.hint());
+	/**
+	 * Shown when the cursor is off the map, so the strip is never blank.
+	 *
+	 * <p>Lists the gestures, because there are no mode buttons left to advertise them.
+	 * Shift-drag in particular is undiscoverable otherwise, which was the stated reason
+	 * the modal buttons existed. The answer is to say so here rather than to spend three
+	 * toolbar buttons and a persistent mode on it.
+	 */
+	public void showHint() {
+		cursor.setText("drag to pan    wheel to zoom    double click to centre    "
+				+ "shift-drag for a cross section");
 	}
 
 	/**

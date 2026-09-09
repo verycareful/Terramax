@@ -16,8 +16,13 @@ import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
 /**
- * The map itself: pan, zoom, render, and whatever the current mode does with a
- * click.
+ * The map itself: pan, zoom, render, and two gestures on top of that.
+ *
+ * <p><b>No modes.</b> Drag pans, wheel zooms about the pointer, double click
+ * recentres, and shift-drag draws a cross section with the line and its length shown
+ * while you draw it. There were three toggle buttons for this, and in the default one
+ * a click did nothing at all. A modifier held during a gesture cannot be left armed by
+ * accident, which a button can and did.
  *
  * <p>Rendering happens off the event thread through {@link TileRenderer}, with tiles
  * painted as they land, and it climbs a <b>refinement ladder</b>: 96 pixels first,
@@ -74,6 +79,9 @@ public final class MapPanel extends JPanel {
 	private static final int SCALE_BAR_MARGIN = 18;
 	private static final int PICK_MARKER_RADIUS = 5;
 
+	/** Shortest shift-drag that counts as a section rather than a click. */
+	private static final int MIN_SECTION_PIXELS = 8;
+
 	/** Reports what the user did, so the frame can update the panels around it. */
 	public interface MapListener {
 		void cursorMoved(double worldX, double worldZ);
@@ -81,8 +89,6 @@ public final class MapPanel extends JPanel {
 		void cursorLeft();
 
 		void sectionDrawn(double startX, double startZ, double endX, double endZ);
-
-		void pointProbed(double worldX, double worldZ);
 
 		/**
 		 * One level of the ladder finished and is on screen.
@@ -100,12 +106,17 @@ public final class MapPanel extends JPanel {
 	private final transient TerrainModel model;
 	private final transient MapListener listener;
 
-	private transient MapRenderer.Layer plateLayer = MapRenderer.Layer.CRUST_TYPE;
-	private transient MapRenderer.TerrainLayer terrainLayer = MapRenderer.TerrainLayer.ELEVATION_MAGMA;
-	private transient ViewerMode mode = ViewerMode.PAN;
+	private transient MapLayer layer = MapLayer.ELEVATION;
 
-	/** First endpoint of a pending section, in world coordinates, or null. */
-	private transient double[] pendingSection;
+	/**
+	 * Endpoints of a section being dragged, in pixels, or null.
+	 *
+	 * <p>Holds {@code startX, startY, endX, endY} so the line can be drawn while the
+	 * mouse is still down. Sections used to be two separate clicks in a mode, which
+	 * meant arming a tool, clicking, remembering you had clicked, and clicking again.
+	 * A drag is one gesture and shows what it will produce while you make it.
+	 */
+	private transient int[] sectionDrag;
 
 	private double centreX;
 	private double centreZ;
@@ -140,35 +151,13 @@ public final class MapPanel extends JPanel {
 		installMouseHandlers();
 	}
 
-	public void setMode(final ViewerMode newMode) {
-		this.mode = newMode;
-		this.pendingSection = null;
-		repaint();
-	}
-
-	public ViewerMode mode() {
-		return mode;
-	}
-
-	/** Selects a plate layer, clearing any terrain layer. Exactly one is ever active. */
-	public void setLayer(final MapRenderer.Layer layer) {
-		this.plateLayer = layer;
-		this.terrainLayer = null;
+	public void setLayer(final MapLayer newLayer) {
+		this.layer = newLayer;
 		requestRender();
 	}
 
-	/** Selects a terrain layer, which takes precedence over the plate layer. */
-	public void setTerrainLayer(final MapRenderer.TerrainLayer layer) {
-		this.terrainLayer = layer;
-		requestRender();
-	}
-
-	public MapRenderer.TerrainLayer terrainLayer() {
-		return terrainLayer;
-	}
-
-	public MapRenderer.Layer plateLayer() {
-		return plateLayer;
+	public MapLayer layer() {
+		return layer;
 	}
 
 	/** Call after any settings change, so the view picks up the rebuilt world. */
@@ -181,6 +170,27 @@ public final class MapPanel extends JPanel {
 		this.centreX = worldX;
 		this.centreZ = worldZ;
 		requestRender();
+	}
+
+	/**
+	 * Moves to a place and to the scale it is visible at.
+	 *
+	 * <p>The span is the point. A probe reporting a fault block province knows it is
+	 * 42,000 blocks across; arriving there at a continental zoom would put the whole
+	 * province inside a few pixels and show nothing, which is exactly the failure that
+	 * made this worth building.
+	 */
+	public void goTo(final double worldX, final double worldZ, final double span) {
+		this.centreX = worldX;
+		this.centreZ = worldZ;
+		this.spanBlocks = Math.max(MIN_SPAN_BLOCKS, Math.min(MAX_SPAN_BLOCKS, span));
+		requestRender();
+	}
+
+	/** The window currently on screen, for anything that measures what you can see. */
+	public MapView currentView() {
+		return new MapView(centreX, centreZ, spanBlocks,
+				Math.max(1, Math.min(getWidth(), getHeight())));
 	}
 
 	public double centreX() {
@@ -213,12 +223,25 @@ public final class MapPanel extends JPanel {
 			public void mousePressed(final MouseEvent e) {
 				dragOriginX = e.getX();
 				dragOriginY = e.getY();
+
+				// Shift arms a section for the duration of the drag and no longer. A
+				// modifier is a mode you cannot forget you are in, which is the whole
+				// complaint against the buttons this replaces: they stayed armed, so a
+				// stray click much later did something you had stopped expecting.
+				sectionDrag = e.isShiftDown()
+						? new int[] {e.getX(), e.getY(), e.getX(), e.getY()}
+						: null;
 			}
 
 			@Override
 			public void mouseDragged(final MouseEvent e) {
-				// Panning stays available in every mode. A tool that also disabled
-				// navigation would mean leaving the tool to look somewhere else.
+				if (sectionDrag != null) {
+					sectionDrag[2] = e.getX();
+					sectionDrag[3] = e.getY();
+					repaint();
+					return;
+				}
+
 				centreX -= (e.getX() - dragOriginX) * blocksPerPixel();
 				centreZ -= (e.getY() - dragOriginY) * blocksPerPixel();
 
@@ -230,7 +253,23 @@ public final class MapPanel extends JPanel {
 
 			@Override
 			public void mouseReleased(final MouseEvent e) {
-				requestRender();
+				if (sectionDrag == null) {
+					requestRender();
+					return;
+				}
+
+				int[] drag = sectionDrag;
+				sectionDrag = null;
+				repaint();
+
+				// A shift-click with no travel is not a section, it is a click that
+				// happened to hold shift. Plotting a profile of zero length would blank
+				// the panel below for no reason anyone could point at.
+				if (Math.abs(drag[2] - drag[0]) + Math.abs(drag[3] - drag[1]) >= MIN_SECTION_PIXELS) {
+					listener.sectionDrawn(
+							worldXAt(drag[0]), worldZAt(drag[1]),
+							worldXAt(drag[2]), worldZAt(drag[3]));
+				}
 			}
 
 			@Override
@@ -245,11 +284,12 @@ public final class MapPanel extends JPanel {
 
 			@Override
 			public void mouseClicked(final MouseEvent e) {
-				if (!SwingUtilities.isLeftMouseButton(e)) {
-					return;
+				// Double click recentres. Single click does nothing on purpose: the
+				// status bar already reports everything under the pointer as it moves,
+				// so a click to inspect would be a gesture that duplicates hovering.
+				if (SwingUtilities.isLeftMouseButton(e) && e.getClickCount() == 2) {
+					goTo(worldXAt(e.getX()), worldZAt(e.getY()));
 				}
-
-				handleClick(worldXAt(e.getX()), worldZAt(e.getY()));
 			}
 
 			@Override
@@ -276,28 +316,6 @@ public final class MapPanel extends JPanel {
 		addMouseListener(handler);
 		addMouseMotionListener(handler);
 		addMouseWheelListener(handler);
-	}
-
-	private void handleClick(final double worldX, final double worldZ) {
-		switch (mode) {
-			case PAN -> {
-				// Nothing. Panning is a drag.
-			}
-
-			case PROBE -> listener.pointProbed(worldX, worldZ);
-
-			case SECTION -> {
-				if (pendingSection == null) {
-					pendingSection = new double[] {worldX, worldZ};
-					repaint();
-					return;
-				}
-
-				listener.sectionDrawn(pendingSection[0], pendingSection[1], worldX, worldZ);
-				pendingSection = null;
-				repaint();
-			}
-		}
 	}
 
 	/**
@@ -356,8 +374,7 @@ public final class MapPanel extends JPanel {
 		// picture change meaning as it sharpened.
 		TerrainModel.Snapshot world = model.snapshot();
 
-		MapRenderer.Layer requestedPlate = plateLayer;
-		MapRenderer.TerrainLayer requestedTerrain = terrainLayer;
+		MapLayer requested = layer;
 
 		int[] levels = ladderTo(cap);
 
@@ -369,7 +386,7 @@ public final class MapPanel extends JPanel {
 			MapView view = new MapView(x, z, span, levels[step]);
 			long start = System.nanoTime();
 
-			BufferedImage image = renderLevel(world, view, requestedTerrain, requestedPlate,
+			BufferedImage image = renderLevel(world, view, requested,
 					() -> generation.get() != mine);
 
 			if (generation.get() != mine) {
@@ -397,16 +414,15 @@ public final class MapPanel extends JPanel {
 	}
 
 	private BufferedImage renderLevel(
-			final TerrainModel.Snapshot world, final MapView view,
-			final MapRenderer.TerrainLayer terrain, final MapRenderer.Layer plates,
+			final TerrainModel.Snapshot world, final MapView view, final MapLayer requested,
 			final TileRenderer.Cancelled cancelled) {
-		return terrain != null
+		return requested.isTerrain()
 				? MapRenderer.renderTerrainProgressive(
-						world, view, terrain,
+						world, view, requested.terrain(),
 						WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
 						partial -> showPartial(partial, view), cancelled)
 				: MapRenderer.renderProgressive(
-						world.plates(), view, plates,
+						world.plates(), view, requested.plate(),
 						partial -> showPartial(partial, view), cancelled);
 	}
 
@@ -510,16 +526,24 @@ public final class MapPanel extends JPanel {
 
 	/** Marks the first endpoint of a section, so a half-finished pick is visible. */
 	private void drawPendingSection(final Graphics2D g) {
-		if (pendingSection == null) {
+		if (sectionDrag == null) {
 			return;
 		}
 
-		int px = (int) Math.round((pendingSection[0] - centreX) / blocksPerPixel() + getWidth() / 2.0);
-		int py = (int) Math.round((pendingSection[1] - centreZ) / blocksPerPixel() + getHeight() / 2.0);
-
 		g.setColor(PICK_MARKER);
-		g.fillOval(px - PICK_MARKER_RADIUS, py - PICK_MARKER_RADIUS,
+		g.drawLine(sectionDrag[0], sectionDrag[1], sectionDrag[2], sectionDrag[3]);
+		g.fillOval(sectionDrag[0] - PICK_MARKER_RADIUS, sectionDrag[1] - PICK_MARKER_RADIUS,
 				PICK_MARKER_RADIUS * 2, PICK_MARKER_RADIUS * 2);
+		g.fillOval(sectionDrag[2] - PICK_MARKER_RADIUS, sectionDrag[3] - PICK_MARKER_RADIUS,
+				PICK_MARKER_RADIUS * 2, PICK_MARKER_RADIUS * 2);
+
+		double blocks = Math.hypot(
+				sectionDrag[2] - (double) sectionDrag[0],
+				sectionDrag[3] - (double) sectionDrag[1]) * blocksPerPixel();
+
+		g.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+		g.drawString(String.format("%,.0f blocks", blocks),
+				sectionDrag[2] + PICK_MARKER_RADIUS * 2, sectionDrag[3]);
 	}
 
 	@Override
