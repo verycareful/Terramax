@@ -475,7 +475,7 @@ public final class MapRenderer {
 
 	public static BufferedImage render(final PlateMap plates, final MapView view, final Layer layer) {
 		return renderProgressive(plates, view, layer, image -> {
-		});
+		}, TileRenderer.Cancelled.NEVER);
 	}
 
 	/**
@@ -486,7 +486,7 @@ public final class MapRenderer {
 	 */
 	public static BufferedImage renderProgressive(
 			final PlateMap plates, final MapView view, final Layer layer,
-			final TileRenderer.TileListener listener) {
+			final TileRenderer.TileListener listener, final TileRenderer.Cancelled cancelled) {
 		double spacing = plates.settings().crustSpacingBlocks();
 		double interiorDistance = spacing * INTERIOR_FRACTION;
 		double edgeLineBlocks = Math.max(EDGE_LINE_BLOCKS, view.blocksPerPixel());
@@ -500,22 +500,26 @@ public final class MapRenderer {
 				case CRUST_TYPE -> crustTypeColour(sample, plates, edgeLineBlocks);
 				case BOUNDARY_TYPE -> boundaryTypeColour(sample, interiorDistance);
 			};
-		}, listener);
+		}, listener, cancelled);
 	}
 
 	public static BufferedImage renderTerrain(
 			final TerrainModel.Snapshot world, final MapView view, final TerrainLayer layer,
 			final int minY, final int maxY, final int seaLevel) {
 		return renderTerrainProgressive(world, view, layer, minY, maxY, seaLevel, image -> {
-		});
+		}, TileRenderer.Cancelled.NEVER);
 	}
 
 	public static BufferedImage renderTerrainProgressive(
 			final TerrainModel.Snapshot world, final MapView view, final TerrainLayer layer,
 			final int minY, final int maxY, final int seaLevel,
-			final TileRenderer.TileListener listener) {
-		// Creeks only where they would be visible. Same choice MoistureScale makes
-		// one line below, for the same reason.
+			final TileRenderer.TileListener listener, final TileRenderer.Cancelled cancelled) {
+		// Two surfaces, and the split is the point. A layer showing elevation drops the
+		// carve once a pixel is wider than the valley it cuts, because that carve
+		// cannot be drawn and costs a priority flood per basin to compute: measured at
+		// 87 percent of a continental render. A layer showing drainage keeps it, since
+		// there the carve is the content rather than an invisible detail.
+		HeightField surface = world.surfaceFor(view.blocksPerPixel());
 		HeightField field = world.terrainFor(view.blocksPerPixel());
 		boolean creeks = view.blocksPerPixel() <= world.drainage().creekVisibleBelowBlocks();
 		PlateMap plates = world.plates();
@@ -528,15 +532,15 @@ public final class MapRenderer {
 
 		// Temperature and life zone read the coupled field, not the bare one, so the
 		// snowline sits higher on a sheltered lee than on the windward face opposite.
-		SurfaceClimate surface = world.moisture().surfaceFor(view.blocksPerPixel());
+		SurfaceClimate climateSurface = world.moisture().surfaceFor(view.blocksPerPixel());
 
 		return TileRenderer.render(view, (worldX, worldZ) -> switch (layer) {
 			case ELEVATION_MAGMA ->
-					magmaColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
+					magmaColour(surface.heightAt(worldX, worldZ), minY, maxY).getRGB();
 			case ELEVATION_RAW ->
-					rawColour(field.heightAt(worldX, worldZ), minY, maxY).getRGB();
+					rawColour(surface.heightAt(worldX, worldZ), minY, maxY).getRGB();
 			case ELEVATION_HYPSOMETRIC ->
-					elevationColour(field.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
+					elevationColour(surface.heightAt(worldX, worldZ), minY, maxY, seaLevel).getRGB();
 			case REGION_TYPE -> regionTypeColour(plates, regions, worldX, worldZ);
 			case REGION_ID -> regionIdColour(plates, regions, worldX, worldZ);
 			case BASIN_ID -> basinIdColour(world.basins(), field, worldX, worldZ, seaLevel);
@@ -545,13 +549,13 @@ public final class MapRenderer {
 			case HILLSLOPE -> hillslopeColour(world, field, worldX, worldZ, seaLevel, creeks);
 			case LAKES -> lakeColour(world, field, worldX, worldZ, minY, maxY, seaLevel, creeks);
 			case INCISION -> incisionColour(world, field, worldX, worldZ, seaLevel);
-			case TEMPERATURE -> temperatureColour(field, surface, worldX, worldZ);
-			case LIFE_ZONE -> lifeZoneColour(field, surface, worldX, worldZ, seaLevel);
+			case TEMPERATURE -> temperatureColour(surface, climateSurface, worldX, worldZ);
+			case LIFE_ZONE -> lifeZoneColour(surface, climateSurface, worldX, worldZ, seaLevel);
 			case WIND -> windColour(world.wind(), climate, worldX, worldZ);
 			case PRECIPITATION -> precipitationColour(moisture, worldX, worldZ);
 			case HUMIDITY -> humidityColour(moisture, worldX, worldZ);
 			case FOEHN_WARMING -> foehnColour(moisture, worldX, worldZ);
-		}, listener);
+		}, listener, cancelled);
 	}
 
 	private static int regionTypeColour(

@@ -30,8 +30,20 @@ public final class ViewerFrame extends JFrame {
 	private static final int WINDOW_WIDTH = 1600;
 	private static final int WINDOW_HEIGHT = 1000;
 
-	/** Opening view, in crust cells across. Wide enough to hold several plates. */
-	private static final double INITIAL_SPAN_CELLS = 140.0;
+	/**
+	 * Opening view, in blocks across. Sixty-four chunks.
+	 *
+	 * <p>It used to open on 140 crust cells, which is 840,000 blocks, and render them
+	 * at panel resolution: a million terrain columns, around forty seconds, before the
+	 * window drew anything at all. Nobody asked for that view and it was the first
+	 * thing anybody saw.
+	 *
+	 * <p>A thousand blocks is close to one block per pixel, which is the scale terrain
+	 * detail actually exists at, and it is where somebody standing in the world would
+	 * be. Zooming out is one gesture and now costs no more than zooming in, so the wide
+	 * view is a thing you ask for rather than a thing you wait through.
+	 */
+	private static final double INITIAL_SPAN_BLOCKS = 1_024.0;
 
 	private final transient TerrainModel model;
 	private final transient MapPanel map;
@@ -40,14 +52,12 @@ public final class ViewerFrame extends JFrame {
 	private final transient SectionPanel section = new SectionPanel();
 	private final transient StatusBar status = new StatusBar();
 
-	private transient boolean lastRenderWasDraft;
 
 	public ViewerFrame(final long seed) {
 		super("Terramax terrain simulator");
 
 		this.model = new TerrainModel(seed);
-		this.map = new MapPanel(model, new MapEvents(),
-				model.plateSettings().crustSpacingBlocks() * INITIAL_SPAN_CELLS);
+		this.map = new MapPanel(model, new MapEvents(), INITIAL_SPAN_BLOCKS);
 
 		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 		setLayout(new BorderLayout());
@@ -220,14 +230,15 @@ public final class ViewerFrame extends JFrame {
 		}
 
 		@Override
-		public void renderComplete(final MapView view, final long elapsedMs) {
-			lastRenderWasDraft = view.pixels() < Math.min(map.getWidth(), map.getHeight());
+		public void renderComplete(
+				final MapView view, final long elapsedMs, final int level, final int levels) {
+			status.showRender(model.snapshot(), view, elapsedMs, level, levels);
 
-			status.showRender(view, elapsedMs, lastRenderWasDraft);
-
-			// Statistics only for finished frames. Measuring a draft would report
-			// numbers for a view the user is still moving.
-			if (!lastRenderWasDraft) {
+			// Statistics only at the top of the ladder. Measuring a coarse level would
+			// report numbers for a picture that is about to be replaced, and at 96
+			// pixels it would report them from 9,216 samples as though they described
+			// the view.
+			if (level == levels) {
 				statistics.update(model.snapshot(), view);
 			}
 		}

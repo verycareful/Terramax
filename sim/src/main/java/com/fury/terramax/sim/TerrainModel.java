@@ -12,6 +12,7 @@ import com.fury.terramax.core.plate.PlateMapSettings;
 import com.fury.terramax.core.region.RegionClimate;
 import com.fury.terramax.core.region.RegionMap;
 import com.fury.terramax.core.region.RegionSettings;
+import com.fury.terramax.core.terrain.HeightField;
 import com.fury.terramax.core.terrain.TectonicHeight;
 import com.fury.terramax.core.terrain.TerrainHeight;
 import com.fury.terramax.core.terrain.TerrainSettings;
@@ -94,6 +95,38 @@ public final class TerrainModel {
 		 */
 		public TerrainHeight terrainFor(final double blocksPerPixel) {
 			return blocksPerPixel <= drainage.creekVisibleBelowBlocks() ? terrain : coarseTerrain;
+		}
+
+		/**
+		 * The surface for a view that wants elevation rather than drainage.
+		 *
+		 * <p>Three rungs where {@link #terrainFor} has two, and the third is the one
+		 * that matters for a wide view. Creeks go once a pixel is wider than a creek.
+		 * Channels go once a pixel is wider than the valley a channel cuts, and what is
+		 * left is the uncarved uplift surface, which costs no basin solves at all.
+		 *
+		 * <p><b>The carve was 87 percent of a continental render's cost and none of its
+		 * content.</b> At 840,000 blocks across 96 pixels a pixel covers 8,750 blocks:
+		 * the same window took 88.9 seconds carved against 11.5 for a layer asking for
+		 * no drainage, at identical sample count. That work produced valleys far too
+		 * narrow to occupy a pixel.
+		 *
+		 * <p>Not for the drainage layers. Basins, discharge, lakes and incision are
+		 * about the carve, so they keep asking {@link #terrainFor} and keep paying for
+		 * it. A render of the basin map at continental scale is slow because that is
+		 * genuinely the question, which is the opposite of this case.
+		 */
+		public HeightField surfaceFor(final double blocksPerPixel) {
+			if (blocksPerPixel <= drainage.creekVisibleBelowBlocks()) {
+				return terrain;
+			}
+
+			return blocksPerPixel <= drainage.channelVisibleBelowBlocks() ? coarseTerrain : uplift;
+		}
+
+		/** True where {@link #surfaceFor} would return ground no river has touched. */
+		public boolean carveVisibleAt(final double blocksPerPixel) {
+			return blocksPerPixel <= drainage.channelVisibleBelowBlocks();
 		}
 
 		/**

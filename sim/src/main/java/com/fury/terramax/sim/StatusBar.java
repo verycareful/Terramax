@@ -78,9 +78,35 @@ public final class StatusBar extends JPanel {
 				plate.plate().cellX(), plate.plate().cellZ()));
 	}
 
-	public void showRender(final MapView view, final long elapsedMs, final boolean draft) {
-		render.setText(String.format("%,.2f blocks/px   %d ms%s",
-				view.blocksPerPixel(), elapsedMs, draft ? "  (draft)" : ""));
+	/**
+	 * Reports what was just drawn, and how finished it is.
+	 *
+	 * <p>Says the level explicitly rather than only tagging coarse frames as drafts. A
+	 * ladder means most frames on screen are intermediate, and "3 of 5" tells you the
+	 * picture is still coming where "draft" only tells you it is not the final one.
+	 *
+	 * <p>Also says <b>which surface</b> is on screen. The renderer drops creeks once a
+	 * pixel is wider than a creek, and drops the river carve entirely once a pixel is
+	 * wider than the valley a river cuts. Both are correct and both are invisible, and
+	 * a substitution nobody can see is how a render ends up lying about what it shows.
+	 * It matters more here than it looks: the ladder can cross a threshold partway up,
+	 * so a picture can gain rivers as it sharpens rather than merely getting crisper.
+	 */
+	public void showRender(
+			final TerrainModel.Snapshot world, final MapView view,
+			final long elapsedMs, final int level, final int levels) {
+		render.setText(String.format("%,.0f blocks   %,.2f blocks/px   level %d of %d   %d ms   %s",
+				view.spanBlocks(), view.blocksPerPixel(), level, levels, elapsedMs,
+				surfaceName(world, view.blocksPerPixel())));
+	}
+
+	private static String surfaceName(
+			final TerrainModel.Snapshot world, final double blocksPerPixel) {
+		if (blocksPerPixel <= world.drainage().creekVisibleBelowBlocks()) {
+			return "rivers and creeks";
+		}
+
+		return world.carveVisibleAt(blocksPerPixel) ? "rivers, no creeks" : "uncarved, no rivers";
 	}
 
 	private static final long serialVersionUID = 1L;

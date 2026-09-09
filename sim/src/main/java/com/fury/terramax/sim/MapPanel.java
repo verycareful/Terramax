@@ -10,6 +10,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
@@ -19,16 +20,35 @@ import javax.swing.SwingUtilities;
  * click.
  *
  * <p>Rendering happens off the event thread through {@link TileRenderer}, with tiles
- * painted as they land. While the mouse is down the panel renders at reduced
- * resolution and scales up, because a blurry image that tracks the mouse is far more
- * useful than a crisp one arriving a second after you stopped moving.
+ * painted as they land, and it climbs a <b>refinement ladder</b>: 96 pixels first,
+ * then 192, 384, 768, and finally the panel's own size. Every level is displayed as it
+ * lands and each costs four times the one before, so the first image arrives in about
+ * the time it takes to notice you asked for it, and sharpens while you look at it.
+ *
+ * <p><b>Cost lives in the sample count, not in the zoom.</b> That is the whole reason
+ * this exists. The panel used to render at {@code min(width, height)} pixels whatever
+ * the span, so every view cost around a million terrain columns whether it covered a
+ * thousand blocks or a million, and the window opened by evaluating all of them before
+ * drawing anything. Capping samples rather than zoom makes a wide view cost exactly
+ * what a close one costs.
+ *
+ * <p>Dragging needs no special case, which is the pleasant part. Each mouse event
+ * bumps the generation, cancelling the climb in flight and starting a new one at 96
+ * pixels, so a drag naturally shows a coarse image that tracks the mouse. Stop moving
+ * and the last climb runs to the top on its own.
  *
  * <p>Knows nothing about controls, statistics or the section plot. It reports what
  * happened through {@link MapListener} and lets the frame decide what to do about it.
  */
 public final class MapPanel extends JPanel {
-	/** Pixels rendered per axis while dragging. Upscaled to fill the panel. */
-	private static final int DRAFT_PIXELS = 320;
+	/**
+	 * Resolutions the ladder climbs through, in pixels per axis.
+	 *
+	 * <p>Doubling, so each level costs four times the last and the whole climb costs
+	 * about a third more than the top level alone. Anything below 96 is too coarse to
+	 * recognise ground by; anything above the panel is wasted.
+	 */
+	private static final int[] LADDER = {96, 192, 384, 768};
 
 	private static final double ZOOM_STEP = 1.25;
 
@@ -64,7 +84,17 @@ public final class MapPanel extends JPanel {
 
 		void pointProbed(double worldX, double worldZ);
 
-		void renderComplete(MapView view, long elapsedMs);
+		/**
+		 * One level of the ladder finished and is on screen.
+		 *
+		 * @param view      what was rendered, including the resolution it was rendered at
+		 * @param elapsedMs how long this level took
+		 * @param level     one-based position on the ladder
+		 * @param levels    how many levels this climb will run, so a caller can say
+		 *                  "3 of 5" rather than leaving the user guessing whether the
+		 *                  picture is finished
+		 */
+		void renderComplete(MapView view, long elapsedMs, int level, int levels);
 	}
 
 	private final transient TerrainModel model;
@@ -83,9 +113,19 @@ public final class MapPanel extends JPanel {
 
 	private transient BufferedImage current;
 	private transient double currentSpan;
+
+	/**
+	 * Bumped by anything that changes what should be on screen.
+	 *
+	 * <p>A climb renders only while the generation it started under is still current,
+	 * so a view change abandons it. Every tile checks this twice, and the check before
+	 * publishing is the one that matters: without it an abandoned render would paint
+	 * its last finished tiles over the new view.
+	 */
+	private final transient AtomicInteger generation = new AtomicInteger();
+
+	/** Held by whichever thread is climbing, so there is never more than one. */
 	private final transient AtomicBoolean rendering = new AtomicBoolean(false);
-	private transient boolean pendingRender;
-	private transient boolean draft;
 
 	private int dragOriginX;
 	private int dragOriginY;
@@ -114,13 +154,13 @@ public final class MapPanel extends JPanel {
 	public void setLayer(final MapRenderer.Layer layer) {
 		this.plateLayer = layer;
 		this.terrainLayer = null;
-		requestRender(false);
+		requestRender();
 	}
 
 	/** Selects a terrain layer, which takes precedence over the plate layer. */
 	public void setTerrainLayer(final MapRenderer.TerrainLayer layer) {
 		this.terrainLayer = layer;
-		requestRender(false);
+		requestRender();
 	}
 
 	public MapRenderer.TerrainLayer terrainLayer() {
@@ -133,14 +173,14 @@ public final class MapPanel extends JPanel {
 
 	/** Call after any settings change, so the view picks up the rebuilt world. */
 	public void refresh() {
-		requestRender(false);
+		requestRender();
 	}
 
 	/** Centres the view on a coordinate without changing the zoom. */
 	public void goTo(final double worldX, final double worldZ) {
 		this.centreX = worldX;
 		this.centreZ = worldZ;
-		requestRender(false);
+		requestRender();
 	}
 
 	public double centreX() {
@@ -185,12 +225,12 @@ public final class MapPanel extends JPanel {
 				dragOriginX = e.getX();
 				dragOriginY = e.getY();
 
-				requestRender(true);
+				requestRender();
 			}
 
 			@Override
 			public void mouseReleased(final MouseEvent e) {
-				requestRender(false);
+				requestRender();
 			}
 
 			@Override
@@ -229,7 +269,7 @@ public final class MapPanel extends JPanel {
 				centreZ = anchorZ + (centreZ - anchorZ) * ratio;
 				spanBlocks = newSpan;
 
-				requestRender(true);
+				requestRender();
 			}
 		};
 
@@ -261,63 +301,135 @@ public final class MapPanel extends JPanel {
 	}
 
 	/**
-	 * Renders in the background, coalescing requests.
+	 * Marks what is on screen as out of date and starts a climb if none is running.
 	 *
-	 * <p>Only one render runs at a time. Requests arriving during a render set a flag
-	 * rather than queueing, so a fast drag produces one follow-up render instead of a
-	 * backlog of stale frames.
+	 * <p>Cheap enough to call from a mouse-drag handler, which is the point: coalescing
+	 * is not needed because the generation counter makes a superseded climb abandon
+	 * itself rather than queueing behind the new one.
 	 */
-	private void requestRender(final boolean draftQuality) {
-		this.draft = draftQuality;
+	private void requestRender() {
+		generation.incrementAndGet();
 
-		if (!rendering.compareAndSet(false, true)) {
-			pendingRender = true;
-			return;
+		// A climb already in flight will notice the bump and start over, so there is
+		// nothing to do but let it. Only start a thread when none holds the flag.
+		if (rendering.compareAndSet(false, true)) {
+			Thread worker = new Thread(this::climb, "terramax-render");
+
+			worker.setDaemon(true);
+			worker.start();
 		}
+	}
 
-		int pixels = draftQuality
-				? DRAFT_PIXELS
-				: Math.max(1, Math.min(getWidth(), getHeight()));
+	/**
+	 * Climbs the ladder for the current generation, and again if it moved meanwhile.
+	 *
+	 * <p>The reacquire at the end closes the window between releasing the flag and
+	 * exiting. Without it a request arriving in that instant would see the flag held,
+	 * decline to start a thread, and then watch this one leave: the view would sit
+	 * stale until the user moved the mouse again.
+	 */
+	private void climb() {
+		while (true) {
+			int mine = generation.get();
 
-		MapView view = new MapView(centreX, centreZ, spanBlocks, pixels);
+			climbFor(mine);
+			rendering.set(false);
 
-		// One snapshot for the whole render. Taking the three maps separately would
-		// let a settings change land between them and leave the plate map and the
-		// terrain describing different worlds.
+			if (generation.get() == mine || !rendering.compareAndSet(false, true)) {
+				return;
+			}
+		}
+	}
+
+	/** One full climb, abandoned as soon as the generation moves past {@code mine}. */
+	private void climbFor(final int mine) {
+		// Read once, after the generation, so these are the values that were current
+		// when it was bumped rather than a mixture from two different views.
+		double x = centreX;
+		double z = centreZ;
+		double span = spanBlocks;
+		int cap = Math.max(1, Math.min(getWidth(), getHeight()));
+
+		// One snapshot for the whole climb. Taking the maps separately would let a
+		// settings change land between them and leave the plate map and the terrain
+		// describing different worlds, and taking a fresh one per level would let the
+		// picture change meaning as it sharpened.
 		TerrainModel.Snapshot world = model.snapshot();
 
 		MapRenderer.Layer requestedPlate = plateLayer;
 		MapRenderer.TerrainLayer requestedTerrain = terrainLayer;
 
-		Thread worker = new Thread(() -> {
+		int[] levels = ladderTo(cap);
+
+		for (int step = 0; step < levels.length; step++) {
+			if (generation.get() != mine) {
+				return;
+			}
+
+			MapView view = new MapView(x, z, span, levels[step]);
 			long start = System.nanoTime();
 
-			BufferedImage image = requestedTerrain != null
-					? MapRenderer.renderTerrainProgressive(
-							world, view, requestedTerrain,
-							WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
-							partial -> showPartial(partial, view))
-					: MapRenderer.renderProgressive(
-							world.plates(), view, requestedPlate, partial -> showPartial(partial, view));
+			BufferedImage image = renderLevel(world, view, requestedTerrain, requestedPlate,
+					() -> generation.get() != mine);
+
+			if (generation.get() != mine) {
+				return;
+			}
 
 			long elapsed = (System.nanoTime() - start) / 1_000_000L;
+			int level = step + 1;
+			int count = levels.length;
 
 			SwingUtilities.invokeLater(() -> {
+				// Checked again on the event thread. Between the worker's last check and
+				// this running, a mouse event may have arrived, and painting here would
+				// put an abandoned frame on screen with nothing left to correct it.
+				if (generation.get() != mine) {
+					return;
+				}
+
 				current = image;
 				currentSpan = view.spanBlocks();
-				rendering.set(false);
-				listener.renderComplete(view, elapsed);
+				listener.renderComplete(view, elapsed, level, count);
 				repaint();
-
-				if (pendingRender) {
-					pendingRender = false;
-					requestRender(draft);
-				}
 			});
-		}, "terramax-render");
+		}
+	}
 
-		worker.setDaemon(true);
-		worker.start();
+	private BufferedImage renderLevel(
+			final TerrainModel.Snapshot world, final MapView view,
+			final MapRenderer.TerrainLayer terrain, final MapRenderer.Layer plates,
+			final TileRenderer.Cancelled cancelled) {
+		return terrain != null
+				? MapRenderer.renderTerrainProgressive(
+						world, view, terrain,
+						WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
+						partial -> showPartial(partial, view), cancelled)
+				: MapRenderer.renderProgressive(
+						world.plates(), view, plates,
+						partial -> showPartial(partial, view), cancelled);
+	}
+
+	/**
+	 * The rungs to climb for a panel of this size, ending at the panel itself.
+	 *
+	 * <p>Rungs at or above the cap are dropped, so a small panel climbs fewer levels
+	 * rather than rendering more pixels than it can show. The cap is always the last
+	 * rung, so the climb always finishes at native resolution.
+	 */
+	private static int[] ladderTo(final int cap) {
+		int count = 0;
+
+		while (count < LADDER.length && LADDER[count] < cap) {
+			count++;
+		}
+
+		int[] levels = new int[count + 1];
+
+		System.arraycopy(LADDER, 0, levels, 0, count);
+		levels[count] = cap;
+
+		return levels;
 	}
 
 	/**
@@ -343,7 +455,7 @@ public final class MapPanel extends JPanel {
 		Graphics2D g = (Graphics2D) graphics;
 
 		if (current == null) {
-			requestRender(false);
+			requestRender();
 			g.setColor(OVERLAY_TEXT);
 			g.drawString("rendering...", 16, 26);
 			return;
@@ -416,7 +528,7 @@ public final class MapPanel extends JPanel {
 		super.setBounds(x, y, width, height);
 
 		if (resized && isShowing()) {
-			requestRender(false);
+			requestRender();
 		}
 	}
 

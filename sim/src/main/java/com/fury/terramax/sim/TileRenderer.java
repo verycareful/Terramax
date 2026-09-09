@@ -56,10 +56,29 @@ public final class TileRenderer {
 		void tileReady(BufferedImage image);
 	}
 
+	/**
+	 * Asked whether the render still matters.
+	 *
+	 * <p>Consulted twice per tile, and the second time is the one that counts. Checking
+	 * only before starting a tile would stop wasted work but still publish whatever was
+	 * computed just before the view moved, so an abandoned render would paint over the
+	 * new one. Checking again before publishing means a stale tile is computed and
+	 * thrown away, which costs a little work and cannot corrupt the picture.
+	 *
+	 * <p>Must be safe to call from many threads.
+	 */
+	@FunctionalInterface
+	public interface Cancelled {
+		boolean isCancelled();
+
+		/** For renders nobody will abandon, such as a batch write to a file. */
+		Cancelled NEVER = () -> false;
+	}
+
 	/** Renders everything and returns once complete. */
 	public static BufferedImage renderAll(final MapView view, final PixelSource source) {
 		return render(view, source, image -> {
-		});
+		}, Cancelled.NEVER);
 	}
 
 	/**
@@ -68,9 +87,14 @@ public final class TileRenderer {
 	 * <p>The listener receives the shared image rather than a copy, so it must not
 	 * retain or mutate it. Swing only reads it during paint, which is safe: a
 	 * half-written tile shows as a half-drawn tile, not as corruption.
+	 *
+	 * <p>Returns as soon as every tile has either rendered or been skipped. A cancelled
+	 * render still returns its image, partially filled; the caller is expected to check
+	 * {@code cancelled} itself rather than trust what came back.
 	 */
 	public static BufferedImage render(
-			final MapView view, final PixelSource source, final TileListener listener) {
+			final MapView view, final PixelSource source, final TileListener listener,
+			final Cancelled cancelled) {
 		BufferedImage image = new BufferedImage(
 				view.pixels(), view.pixels(), BufferedImage.TYPE_INT_RGB);
 
@@ -83,8 +107,18 @@ public final class TileRenderer {
 					int tileY = originY;
 
 					pending.add(pool.submit(() -> {
+						// Queued tiles from an abandoned render are skipped rather than
+						// rendered and discarded. At the top of the ladder there are 64
+						// of them, so this is most of the work of a cancelled frame.
+						if (cancelled.isCancelled()) {
+							return;
+						}
+
 						renderTile(image, view, source, tileX, tileY);
-						listener.tileReady(image);
+
+						if (!cancelled.isCancelled()) {
+							listener.tileReady(image);
+						}
 					}));
 				}
 			}
