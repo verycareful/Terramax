@@ -49,8 +49,6 @@ JAVA_HOME=/path/to/jdk-25 ./gradlew build
 
 Minecraft 26.2 uses calendar versioning (1.21.11 was the last release of the old scheme) and Mojang-derived mappings. **Yarn no longer exists past 1.21.11**, so code written against 1.21 needs every Minecraft symbol re-resolved, not merely recompiled.
 
-Further conventions are in [CLAUDE.md](CLAUDE.md).
-
 ## Lineage
 
 Terramax succeeds `realworld` (Minecraft 1.21.8), which enlarged vanilla's Large Biomes preset to 16x by overriding its noise parameters. That approach is not carried forward: overriding vanilla's generator can only rescale what vanilla already produces, and Terramax replaces it outright.
