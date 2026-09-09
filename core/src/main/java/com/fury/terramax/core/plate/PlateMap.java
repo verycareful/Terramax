@@ -54,6 +54,31 @@ public final class PlateMap {
 	private static final int CONTINENT_OCTAVES = 2;
 
 	/**
+	 * How far apart two crust sites may be and still be treated as a possible margin,
+	 * in crust spacings.
+	 *
+	 * <p>Only a cheap rejection. Cells further apart than this cannot share a Voronoi
+	 * edge near the query, and the third-cell weight would give them zero anyway; the
+	 * test exists so most of the several hundred candidate pairs are dismissed on one
+	 * subtraction instead of a full scan.
+	 */
+	private static final double MAX_PAIR_SEPARATION_FACTOR = 2.2;
+
+	/**
+	 * Distance over which a margin fades out as a third cell takes over, in crust
+	 * spacings.
+	 *
+	 * <p>This is the width of a triple junction. Too small and a range ends abruptly
+	 * where it meets another, which is the cliff this whole enumeration exists to
+	 * remove; too large and every margin is weakened by its neighbours everywhere
+	 * along its length, so ranges never reach full height.
+	 */
+	private static final double JUNCTION_SOFTNESS_FACTOR = 0.12;
+
+	/** Rings scanned for the third cell that ends a margin. One past the pair search. */
+	private static final int JUNCTION_SCAN_EXTRA_CELLS = 1;
+
+	/**
 	 * Samples per axis used to calibrate the land/ocean threshold. 64x64 is 4096
 	 * evaluations, a few milliseconds once, and enough for a stable quantile.
 	 */
@@ -69,6 +94,7 @@ public final class PlateMap {
 	private final DomainWarp warp;
 	private final FractalNoise2D continentField;
 	private final double continentThreshold;
+	private final ThreadLocal<Window> scratch;
 
 	public PlateMap(final long seed, final PlateMapSettings settings) {
 		this.seed = seed;
@@ -87,6 +113,11 @@ public final class PlateMap {
 		this.continentField = FractalNoise2D.standard(
 				seed ^ SALT_CONTINENT, CONTINENT_OCTAVES, settings.continentWavelengthBlocks());
 		this.continentThreshold = calibrateContinentThreshold();
+
+		int pairRadius = voronoi.searchRadiusCells();
+		int scanRadius = pairRadius + JUNCTION_SCAN_EXTRA_CELLS;
+
+		this.scratch = ThreadLocal.withInitial(() -> new Window(pairRadius, scanRadius));
 	}
 
 	/**
@@ -232,45 +263,91 @@ public final class PlateMap {
 					plate, plate, crust, crust,
 					PlateBoundaryType.NONE,
 					Double.MAX_VALUE, cell.alongBoundary(),
-					0.0, 0.0);
+					0.0, 0.0, 0.0, cell.cellId(seed));
 		}
 
-		return classify(plate, crust, cell, across);
+		return marginOf(cell, across);
+	}
+
+	/** The margin between the query's own cell and a chosen neighbour of it. */
+	private PlateSample marginOf(final VoronoiSample cell, final Neighbour across) {
+		boolean ownIsLow = lowerCell(
+				cell.cellX(), cell.cellZ(), across.cellX(), across.cellZ());
+
+		CrustCell own = crustCellAt(cell.cellX(), cell.cellZ());
+		CrustCell other = crustCellAt(across.cellX(), across.cellZ());
+		Plate ownPlate = plateOf(cell.cellX(), cell.cellZ());
+
+		return ownIsLow
+				? margin(own, other, ownPlate, across.plate(),
+						across.across(), across.alongBoundary(), 1.0)
+				: margin(other, own, across.plate(), ownPlate,
+						across.across(), across.alongBoundary(), 1.0);
 	}
 
 	/**
-	 * Works out what two plates are doing to each other across a given boundary.
+	 * Works out what two plates are doing to each other across the margin between two
+	 * crust cells.
+	 *
+	 * <p><b>Takes the pair, not a query and its neighbour.</b> Everything here is a
+	 * property of the two cells: which plates own them, what those plates are doing,
+	 * and the margin's own identity. Nothing depends on where the question was asked
+	 * from, so two adjacent columns on opposite sides of the margin receive the same
+	 * answer with only the sign of {@code across} between them.
 	 *
 	 * <p>Shared by {@link #sample} and {@link #forEachBoundary} so the two cannot
-	 * disagree about how a boundary is classified.
+	 * disagree about how a margin is classified.
+	 *
+	 * @param across signed, negative on the low cell's side and positive on the high
+	 *               cell's, with the pair ordered by {@link #lowerCell}
 	 */
-	private PlateSample classify(
-			final Plate plate, final CrustCell crust,
-			final VoronoiSample cell, final Neighbour across) {
-		Plate neighbour = across.plate();
-		CrustCell neighbourCrust = crustCellAt(across.cellX(), across.cellZ());
+	private PlateSample margin(
+			final Window window, final int low, final int high,
+			final double across, final double alongBoundary, final double weight) {
+		return margin(
+				window.crustAt(this, low), window.crustAt(this, high),
+				window.plateAt(this, low), window.plateAt(this, high),
+				across, alongBoundary, weight);
+	}
 
-		double axisX = across.siteX() - cell.siteX();
-		double axisZ = across.siteZ() - cell.siteZ();
+	private PlateSample margin(
+			final CrustCell lowCrust, final CrustCell highCrust,
+			final Plate lowPlate, final Plate highPlate,
+			final double across, final double alongBoundary, final double weight) {
+		long marginId = Hashing.hash(
+				Hashing.hash(seed, lowCrust.cellX(), lowCrust.cellZ()),
+				highCrust.cellX(), highCrust.cellZ());
+
+		// A seam between two cells of the same plate. Not a boundary, and the
+		// fossil suture it will become is a later slice.
+		if (lowPlate.cellX() == highPlate.cellX() && lowPlate.cellZ() == highPlate.cellZ()) {
+			return new PlateSample(
+					lowPlate, highPlate, lowCrust, highCrust,
+					PlateBoundaryType.NONE,
+					across, alongBoundary, 0.0, 0.0, weight, marginId);
+		}
+
+		double axisX = highCrust.siteX() - lowCrust.siteX();
+		double axisZ = highCrust.siteZ() - lowCrust.siteZ();
 		double axisLength = Math.sqrt(axisX * axisX + axisZ * axisZ);
 
 		if (axisLength == 0.0) {
 			return new PlateSample(
-					plate, neighbour, crust, neighbourCrust,
+					lowPlate, highPlate, lowCrust, highCrust,
 					PlateBoundaryType.TRANSFORM,
-					across.boundaryDistance(), across.alongBoundary(), 0.0, 0.0);
+					across, alongBoundary, 0.0, 0.0, weight, marginId);
 		}
 
-		// Unit normal pointing from this plate toward its neighbour, and the
-		// tangent along the boundary.
+		// Unit normal pointing from the low cell toward the high one, and the
+		// tangent along the margin.
 		double normalX = axisX / axisLength;
 		double normalZ = axisZ / axisLength;
 
-		// Relative motion of this plate with respect to its neighbour. Querying from
-		// the far side flips both the normal and the relative velocity, so the signs
-		// cancel and a boundary classifies identically from either side.
-		double relativeX = plate.motionX() - neighbour.motionX();
-		double relativeZ = plate.motionZ() - neighbour.motionZ();
+		// Relative motion of the low plate with respect to the high one. Both the
+		// normal and the pair order come from the canonical ordering rather than from
+		// the query, so this is one number belonging to the margin.
+		double relativeX = lowPlate.motionX() - highPlate.motionX();
+		double relativeZ = lowPlate.motionZ() - highPlate.motionZ();
 
 		double convergence = relativeX * normalX + relativeZ * normalZ;
 		double shear = Math.abs(relativeX * -normalZ + relativeZ * normalX);
@@ -288,8 +365,20 @@ public final class PlateMap {
 		}
 
 		return new PlateSample(
-				plate, neighbour, crust, neighbourCrust,
-				type, across.boundaryDistance(), across.alongBoundary(), convergence, shear);
+				lowPlate, highPlate, lowCrust, highCrust,
+				type, across, alongBoundary, convergence, shear, weight, marginId);
+	}
+
+	/**
+	 * True where the first cell sorts before the second.
+	 *
+	 * <p>The one rule that makes a margin an object rather than a point of view. Both
+	 * sides order the pair the same way, so both build the same frame, agree on the
+	 * sign of the across-axis and hash to the same identity.
+	 */
+	private static boolean lowerCell(
+			final long cellX, final long cellZ, final long otherX, final long otherZ) {
+		return cellX < otherX || (cellX == otherX && cellZ < otherZ);
 	}
 
 	/**
@@ -324,9 +413,12 @@ public final class PlateMap {
 		double offsetX = queryX - (aX + bX) * 0.5;
 		double offsetZ = queryZ - (aZ + bZ) * 0.5;
 
+		// Signed, not absolute. The axis runs from the canonically first cell to the
+		// second, so the sign says which half of the pair the query stands on, which
+		// is what an asymmetric range needs and what taking the magnitude threw away.
 		return new Neighbour(
 				otherCellX, otherCellZ, otherSiteX, otherSiteZ, otherPlate,
-				Math.abs(offsetX * axisX + offsetZ * axisZ) / axisLength,
+				(offsetX * axisX + offsetZ * axisZ) / axisLength,
 				(offsetX * -axisZ + offsetZ * axisX) / axisLength);
 	}
 
@@ -337,28 +429,52 @@ public final class PlateMap {
 	}
 
 	/**
-	 * Visits <em>every</em> plate boundary within reach of a position, not just the
-	 * nearest.
+	 * What one pass over the margins around a position yields besides the margins.
 	 *
-	 * <p>Relief built from the nearest boundary alone is discontinuous: where the
-	 * nearest differing plate changes, the bisector jumps and so does the distance, so
-	 * a range can go from full height to nothing between adjacent columns. Cross
-	 * sections showed exactly that, as vertical walls a thousand blocks tall.
-	 *
-	 * <p>Summing over all boundaries in reach fixes it, and the continuity is free
-	 * rather than engineered. Each contribution is scaled by a falloff that reaches
-	 * zero at {@code maxDistance}, so a boundary entering or leaving the set does so
-	 * at zero and the total never steps.
-	 *
-	 * <p>Also what triple junctions need. Three plates meet, three boundaries overlap,
-	 * and the terrain there is the sum of what all three are doing, which is why real
-	 * junctions are structurally chaotic.
-	 *
-	 * @param maxDistance boundaries further than this contribute nothing, so are skipped
+	 * @param nearest   nearest boundary between differing plates, for callers that
+	 *                  want to know which margin they are on rather than what every
+	 *                  margin builds
+	 * @param crustBase crust base elevation here, blended across cell seams
 	 */
-	public PlateSample forEachBoundary(
+	public record Boundaries(PlateSample nearest, double crustBase) {
+	}
+
+	/**
+	 * Visits every margin within reach of a position, not just the nearest.
+	 *
+	 * <p><b>Margins are enumerated as pairs of crust cells, chosen by geometry.</b>
+	 * The previous version paired the query's own cell with each of its neighbours,
+	 * and that is what put walls through the world's mountains. The set of pairs then
+	 * depends on which cell the query landed in, so stepping across any bisector
+	 * replaces all of them at once: the pair that was building a range stops existing
+	 * and a different pair appears in its place, at full strength, building something
+	 * else. Nothing fades. Measured on an eight-transect walk at one-block steps, the
+	 * surface stepped 1,323 blocks between two adjacent columns, and cross sections
+	 * showed four vertical walls in a single 12,000-block line.
+	 *
+	 * <p>The fix is to ask a question that has nothing to do with the query's cell:
+	 * which pairs of cells share a Voronoi edge near this point? A pair is admitted
+	 * when its bisector passes within {@code maxDistance} and when that stretch of
+	 * bisector is a real edge rather than a line through some third cell's territory.
+	 * The second test is a matter of degree rather than a yes or no, and its answer is
+	 * {@link PlateSample#weight()}, which falls smoothly to zero at the triple
+	 * junctions where an edge ends. So a margin enters and leaves the set at zero on
+	 * both counts, by distance and by weight, and neither its arrival nor its
+	 * departure can be seen in the terrain.
+	 *
+	 * <p>Triple junctions come out right as a consequence rather than as a special
+	 * case. Three margins meet, all three are visited, all three are fading, and the
+	 * ground there is the blend of what all three are doing, which is why real
+	 * junctions are structurally incoherent.
+	 *
+	 * @param maxDistance    margins further than this contribute nothing, so are skipped
+	 * @param baseBlendWidth distance over which neighbouring crust bases blend into
+	 *                       each other, for the returned {@code crustBase}
+	 */
+	public Boundaries forEachBoundary(
 			final double worldX, final double worldZ,
-			final double maxDistance, final BoundaryVisitor visitor) {
+			final double maxDistance, final double baseBlendWidth,
+			final BoundaryVisitor visitor) {
 		double queryX = warp.warpX(worldX, worldZ);
 		double queryZ = warp.warpZ(worldX, worldZ);
 
@@ -366,51 +482,331 @@ public final class PlateMap {
 		Plate plate = plateOf(cell.cellX(), cell.cellZ());
 		CrustCell crust = crustCellAt(cell.cellX(), cell.cellZ());
 
-		long centreX = voronoi.sites().cellX(queryX);
-		long centreZ = voronoi.sites().cellZ(queryZ);
-		int radius = voronoi.searchRadiusCells();
+		Window window = scratch.get();
+		window.fill(voronoi.sites(), queryX, queryZ, maxDistance);
 
-		Neighbour nearest = null;
+		double separationLimit = settings.crustSpacingBlocks() * MAX_PAIR_SEPARATION_FACTOR;
+		double separationLimitSq = separationLimit * separationLimit;
+		double softness = settings.crustSpacingBlocks() * JUNCTION_SOFTNESS_FACTOR;
 
-		for (int dz = -radius; dz <= radius; dz++) {
-			for (int dx = -radius; dx <= radius; dx++) {
-				long cellX = centreX + dx;
-				long cellZ = centreZ + dz;
+		for (int i = 0; i < window.candidateCount; i++) {
+			for (int j = i + 1; j < window.candidateCount; j++) {
+				int a = window.candidates[i];
+				int b = window.candidates[j];
 
-				if (cellX == cell.cellX() && cellZ == cell.cellZ()) {
+				double axisX = window.siteX[b] - window.siteX[a];
+				double axisZ = window.siteZ[b] - window.siteZ[a];
+				double separationSq = axisX * axisX + axisZ * axisZ;
+
+				// Squared, so the overwhelming majority of pairs are rejected before
+				// anything has to take a square root.
+				if (separationSq > separationLimitSq || separationSq == 0.0) {
 					continue;
 				}
 
-				Plate candidate = plateOf(cellX, cellZ);
+				int low = lowerCell(window.cellX[a], window.cellZ[a],
+						window.cellX[b], window.cellZ[b]) ? a : b;
+				int high = low == a ? b : a;
 
-				if (candidate.cellX() == plate.cellX() && candidate.cellZ() == plate.cellZ()) {
+				if (low != a) {
+					axisX = -axisX;
+					axisZ = -axisZ;
+				}
+
+				double separation = Math.sqrt(separationSq);
+
+				// Signed distance to the bisector, from the difference of squared
+				// distances. Positive on the high cell's side.
+				double across = (window.distSq[low] - window.distSq[high]) / (2.0 * separation);
+
+				if (Math.abs(across) >= maxDistance) {
 					continue;
 				}
 
-				Neighbour across = frameAgainst(queryX, queryZ, cell, cellX, cellZ, candidate);
+				double weight = window.marginWeight(low, high, queryX, queryZ,
+						across, axisX / separation, axisZ / separation, softness);
 
-				// The nearest is tracked without a distance limit, because the caller
-				// needs it for the base blend, which reaches much further than relief
-				// does. Only relief is capped at maxDistance.
-				if (nearest == null || across.boundaryDistance() < nearest.boundaryDistance()) {
-					nearest = across;
+				if (weight <= 0.0) {
+					continue;
 				}
 
-				if (across.boundaryDistance() < maxDistance) {
-					visitor.visit(classify(plate, crust, cell, across));
+				double offsetX = queryX - (window.siteX[low] + window.siteX[high]) * 0.5;
+				double offsetZ = queryZ - (window.siteZ[low] + window.siteZ[high]) * 0.5;
+
+				PlateSample boundary = margin(window, low, high,
+						across,
+						(offsetX * -axisZ + offsetZ * axisX) / separation,
+						weight);
+
+				// Seams inside one plate build nothing yet, and averaging them in
+				// would dilute the margins that do. Fossil sutures are a later slice.
+				if (boundary.boundaryType() != PlateBoundaryType.NONE) {
+					visitor.visit(boundary);
 				}
 			}
 		}
 
+		// The nearest boundary is still found the old way, and deliberately. It feeds
+		// the crust base blend, which reaches further than any range and wants the
+		// nearest cell of a *different plate* rather than the nearest margin of any
+		// kind. Relief no longer uses it at all.
+		Neighbour nearest = nearestDifferentPlate(queryX, queryZ, cell, plate);
+		double crustBase = window.blendedBase(this, baseBlendWidth);
+
 		if (nearest == null) {
-			return new PlateSample(
-					plate, plate, crust, crust,
-					PlateBoundaryType.NONE,
-					Double.MAX_VALUE, cell.alongBoundary(),
-					0.0, 0.0);
+			return new Boundaries(
+					new PlateSample(
+							plate, plate, crust, crust,
+							PlateBoundaryType.NONE,
+							Double.MAX_VALUE, cell.alongBoundary(),
+							0.0, 0.0, 0.0, cell.cellId(seed)),
+					crustBase);
 		}
 
-		return classify(plate, crust, cell, nearest);
+		return new Boundaries(marginOf(cell, nearest), crustBase);
+	}
+
+	/**
+	 * The crust sites around one query, held so a pair search can reuse them.
+	 *
+	 * <p>Two radii, and the difference between them is what keeps margin weights
+	 * continuous. Pairs are drawn from the inner ring, which is the same
+	 * neighbourhood the Voronoi search uses and reaches well past the widest range.
+	 * The third-cell test that fades a margin out at a triple junction scans the
+	 * outer ring, one further. A site entering or leaving the window does so at the
+	 * outer edge, far enough away that it can never be the nearest cell to any
+	 * bisector the inner ring produced, so the weight it would have contributed is
+	 * zero either way and the window's own lattice leaves no trace in the terrain.
+	 *
+	 * <p>Held per thread rather than allocated per call. A query runs this for every
+	 * column of every chunk, and the arrays are the same size every time.
+	 */
+	private static final class Window {
+		private final int pairCount;
+		private final int scanCount;
+		private final long[] cellX;
+		private final long[] cellZ;
+		private final double[] siteX;
+		private final double[] siteZ;
+		private final double[] distSq;
+		private final Plate[] plate;
+		private final CrustCell[] crust;
+
+		/** Indices into the inner ring that could still form a margin. */
+		private final int[] candidates;
+		private int candidateCount;
+
+		private Window(final int pairRadius, final int scanRadius) {
+			int pairSide = pairRadius * 2 + 1;
+			int scanSide = scanRadius * 2 + 1;
+
+			this.pairCount = pairSide * pairSide;
+			this.scanCount = scanSide * scanSide;
+			this.cellX = new long[scanCount];
+			this.cellZ = new long[scanCount];
+			this.siteX = new double[scanCount];
+			this.siteZ = new double[scanCount];
+			this.distSq = new double[scanCount];
+			this.plate = new Plate[scanCount];
+			this.crust = new CrustCell[scanCount];
+			this.candidates = new int[pairCount];
+
+			// The inner ring occupies the first pairCount slots, so a pair loop can
+			// stop early and the scan loop can run to the end of the same arrays.
+			this.order = new int[scanCount][2];
+
+			int at = 0;
+
+			for (int dz = -pairRadius; dz <= pairRadius; dz++) {
+				for (int dx = -pairRadius; dx <= pairRadius; dx++) {
+					order[at][0] = dx;
+					order[at][1] = dz;
+					at++;
+				}
+			}
+
+			for (int dz = -scanRadius; dz <= scanRadius; dz++) {
+				for (int dx = -scanRadius; dx <= scanRadius; dx++) {
+					if (Math.abs(dx) <= pairRadius && Math.abs(dz) <= pairRadius) {
+						continue;
+					}
+
+					order[at][0] = dx;
+					order[at][1] = dz;
+					at++;
+				}
+			}
+		}
+
+		private final int[][] order;
+
+		/**
+		 * Loads the sites around a query and works out which can form a margin.
+		 *
+		 * <p><b>The candidate list is a bound, not a heuristic.</b> A pair only
+		 * survives if some third cell is not closer to the foot of the perpendicular,
+		 * and that is impossible once a cell lies further than the nearest cell plus
+		 * twice the reach: the foot is within {@code maxDistance} of the query, so the
+		 * nearest cell is at most {@code nearest + maxDistance} from it while such a
+		 * far cell is at least {@code distance - maxDistance}. Cells beyond the bound
+		 * are dropped before the pair loop rather than after, which turns several
+		 * hundred candidate pairs into a few dozen without changing one column of the
+		 * result.
+		 */
+		private void fill(
+				final PoissonDisk sites, final double queryX, final double queryZ,
+				final double maxDistance) {
+			long centreX = sites.cellX(queryX);
+			long centreZ = sites.cellZ(queryZ);
+
+			double nearestSq = Double.MAX_VALUE;
+
+			for (int i = 0; i < scanCount; i++) {
+				long x = centreX + order[i][0];
+				long z = centreZ + order[i][1];
+
+				double pointX = sites.pointX(x, z);
+				double pointZ = sites.pointZ(x, z);
+				double offsetX = pointX - queryX;
+				double offsetZ = pointZ - queryZ;
+
+				cellX[i] = x;
+				cellZ[i] = z;
+				siteX[i] = pointX;
+				siteZ[i] = pointZ;
+				distSq[i] = offsetX * offsetX + offsetZ * offsetZ;
+				plate[i] = null;
+				crust[i] = null;
+
+				if (i < pairCount) {
+					nearestSq = Math.min(nearestSq, distSq[i]);
+				}
+			}
+
+			double reach = Math.sqrt(nearestSq) + 2.0 * maxDistance;
+			double reachSq = reach * reach;
+
+			candidateCount = 0;
+
+			for (int i = 0; i < pairCount; i++) {
+				if (distSq[i] <= reachSq) {
+					candidates[candidateCount++] = i;
+				}
+			}
+		}
+
+		/** The plate owning a window cell, resolved once per query rather than per pair. */
+		private Plate plateAt(final PlateMap plates, final int index) {
+			if (plate[index] == null) {
+				plate[index] = plates.plateOf(cellX[index], cellZ[index]);
+			}
+
+			return plate[index];
+		}
+
+		/** The crust cell at a window index, resolved once per query rather than per pair. */
+		private CrustCell crustAt(final PlateMap plates, final int index) {
+			if (crust[index] == null) {
+				crust[index] = plates.crustCellAt(cellX[index], cellZ[index]);
+			}
+
+			return crust[index];
+		}
+
+		/**
+		 * How much a pair of cells really is the margin here, in {@code [0, 1]}.
+		 *
+		 * <p>Two cells define a bisector everywhere, but they only share a Voronoi
+		 * edge along the stretch where no third cell is closer. Beyond its ends the
+		 * bisector is a line through someone else's territory and must build nothing.
+		 *
+		 * <p>Measured at the <b>foot of the perpendicular</b>, the point on the
+		 * bisector nearest the query, rather than at the query itself. At the query,
+		 * a third cell is closer than the far member of the pair over most of a
+		 * range's width, which would delete every flank. At the foot, the comparison
+		 * asks the question that was actually meant: is this stretch of bisector a
+		 * real edge? The answer varies smoothly along the edge and reaches zero at
+		 * the triple junctions that end it, so a range fades out where it should
+		 * rather than stopping.
+		 */
+		private double marginWeight(
+				final int low, final int high,
+				final double queryX, final double queryZ, final double across,
+				final double normalX, final double normalZ, final double softness) {
+			double footX = queryX - across * normalX;
+			double footZ = queryZ - across * normalZ;
+
+			double toLowX = footX - siteX[low];
+			double toLowZ = footZ - siteZ[low];
+			double pairSq = toLowX * toLowX + toLowZ * toLowZ;
+
+			double otherSq = Double.MAX_VALUE;
+
+			for (int i = 0; i < scanCount; i++) {
+				if (i == low || i == high) {
+					continue;
+				}
+
+				double offsetX = footX - siteX[i];
+				double offsetZ = footZ - siteZ[i];
+
+				otherSq = Math.min(otherSq, offsetX * offsetX + offsetZ * offsetZ);
+			}
+
+			return smoothstep((Math.sqrt(otherSq) - Math.sqrt(pairSq)) / softness);
+		}
+
+		/**
+		 * Crust base elevation here, blended smoothly across every cell seam.
+		 *
+		 * <p><b>Not the owning cell's base graded toward one neighbour.</b> That was
+		 * the previous form, and it graded toward the nearest cell of a different
+		 * <i>plate</i>, which meant a seam between two cells of the same plate was
+		 * not blended at all. Where such a seam separates continental crust from
+		 * oceanic, and it often does because crust type is decided per cell and
+		 * independently of plate membership, the ground stepped by the whole
+		 * difference between a continental base and an oceanic one. Measured at 118
+		 * blocks, standing as a vertical wall along a coastline that the design
+		 * intends to be the quietest ground in the world.
+		 *
+		 * <p>Every cell in the window contributes instead, weighted by how much
+		 * further it is than the nearest. The weight reaches zero one blend width
+		 * past the nearest cell, so a cell entering or leaving the window contributes
+		 * nothing at the moment it does, and the result is continuous everywhere,
+		 * including at the triple points where a nearest-seam blend would still have
+		 * stepped.
+		 */
+		private double blendedBase(final PlateMap plates, final double blendWidth) {
+			double nearest = Double.MAX_VALUE;
+
+			for (int i = 0; i < scanCount; i++) {
+				nearest = Math.min(nearest, distSq[i]);
+			}
+
+			nearest = Math.sqrt(nearest);
+
+			double total = 0.0;
+			double weightSum = 0.0;
+
+			for (int i = 0; i < scanCount; i++) {
+				double weight = 1.0 - smoothstep((Math.sqrt(distSq[i]) - nearest) / blendWidth);
+
+				if (weight <= 0.0) {
+					continue;
+				}
+
+				total += weight * crustAt(plates, i).baseElevation();
+				weightSum += weight;
+			}
+
+			return weightSum <= 0.0 ? 0.0 : total / weightSum;
+		}
+
+		private static double smoothstep(final double x) {
+			double t = Math.max(0.0, Math.min(1.0, x));
+
+			return t * t * (3.0 - 2.0 * t);
+		}
 	}
 
 	/** A crust cell across a plate boundary, and the frame of that boundary. */
@@ -418,7 +814,7 @@ public final class PlateMap {
 			long cellX, long cellZ,
 			double siteX, double siteZ,
 			Plate plate,
-			double boundaryDistance,
+			double across,
 			double alongBoundary) {
 	}
 

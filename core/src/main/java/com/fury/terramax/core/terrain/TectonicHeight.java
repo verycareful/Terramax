@@ -46,7 +46,10 @@ public final class TectonicHeight implements HeightField {
 	 * the nearest boundary and for the relief ran it twice.
 	 *
 	 * @param plate       the nearest boundary and both sides of it
-	 * @param base        crust base elevation, already blended toward the neighbour
+	 * @param base        crust base elevation, blended smoothly across every cell seam
+	 *                    by {@code PlateMap}. Blending it here against the nearest
+	 *                    differing <i>plate</i> left a step at every seam inside a
+	 *                    plate, which is most of them
 	 * @param relief      mountains, arcs, trenches and rifts
 	 * @param interiority 0 at a plate boundary, 1 once past the blend width
 	 */
@@ -71,28 +74,12 @@ public final class TectonicHeight implements HeightField {
 
 		double interiority = smoothstep(plate.boundaryDistance() / blendWidthBlocks);
 
-		return new Sample(plate, blendedBase(plate, interiority), ridged.relief(), interiority);
+		return new Sample(plate, ridged.base(), ridged.relief(), interiority);
 	}
 
 	@Override
 	public double heightAt(final double worldX, final double worldZ) {
 		return sample(worldX, worldZ).height();
-	}
-
-	/**
-	 * Plate base elevation, blended into the neighbour's near the boundary.
-	 *
-	 * <p>Without this the surface steps instantly from one plate's height to the
-	 * next, producing a cliff along every boundary in the world. At the boundary
-	 * itself both plates evaluate to the same midpoint, so the surface is continuous
-	 * across it regardless of which side is queried.
-	 */
-	private static double blendedBase(final PlateSample sample, final double interiority) {
-		double own = sample.crust().baseElevation();
-		double neighbour = sample.neighbourCrust().baseElevation();
-		double midpoint = (own + neighbour) * 0.5;
-
-		return midpoint + (own - midpoint) * interiority;
 	}
 
 	static double smoothstep(final double x) {

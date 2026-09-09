@@ -7,13 +7,15 @@ package com.fury.terramax.core.terrain;
  * when crust cell size changes. Heights are absolute blocks, because the
  * dimension's vertical range does not scale with anything horizontal.
  *
- * <p><b>{@code blendWidthFraction} and {@code rangeWidthFraction} are knowingly
- * stale.</b> They were tuned against 100,000-block plate spacing and are now
- * multiplied by 6,000-block crust spacing, so ranges come out roughly sixteen times
- * narrower than intended and mountains read as ridges rather than ranges. This is
- * left rather than guessed at, because the right values depend on the seven range
- * types and their zone sequences, which are a later slice. Expect the elevation
- * statistics to show very little terrain above y=1000 until then.
+ * <p><b>{@code rangeWidthFraction} is still knowingly stale, and it is now the main
+ * thing holding range shape back.</b> It was tuned against 100,000-block plate
+ * spacing and is multiplied by 6,000-block crust spacing, so a range half-width is
+ * 3,180 blocks while a collision range rises 1,400. That is a mean gradient near a
+ * half, and measured flanks sustain 7.4 blocks of rise per block over hundreds of
+ * blocks, which is a wall rather than a mountainside. The profiles that would make
+ * a range legible, a foreland basin ahead of a collision or a coastal strip in
+ * front of an arc, have no room to sit in at this width. Widening it is a tuning
+ * pass with its own measurements, not a constant to change in passing.
  *
  * @param blendWidthFraction       distance over which neighbouring crust bases blend, in crust spacings
  * @param rangeWidthFraction       half-width of a mountain range, in crust spacings
@@ -22,6 +24,7 @@ package com.fury.terramax.core.terrain;
  * @param oceanicArcRise           peak rise where two oceanic plates converge
  * @param trenchDrop               depth of the trench on the subducting side
  * @param continentalRiftDrop      depth of a rift valley where continent pulls apart
+ * @param riftShoulderRise         height of the uplifted shoulders flanking that valley
  * @param oceanicRidgeRise         height of a mid-ocean ridge where ocean floor spreads
  * @param transformRelief          relief at transform margins, which build very little
  * @param reliefVariationFraction  how much relief varies along a range, as a fraction of its height
@@ -40,6 +43,7 @@ public record TerrainSettings(
 		double oceanicArcRise,
 		double trenchDrop,
 		double continentalRiftDrop,
+		double riftShoulderRise,
 		double oceanicRidgeRise,
 		double transformRelief,
 		double reliefVariationFraction,
@@ -115,6 +119,12 @@ public record TerrainSettings(
 				420.0,
 				-45.0,
 				-110.0,
+
+				// Shoulders stand roughly twice the depth of the floor they flank. The
+				// East African Rift drops about 1km below its surroundings and its
+				// shoulders rise 2 to 3km above them, which is why the rift reads as a
+				// mountain range with a gash in it rather than as a valley.
+				240.0,
 				260.0,
 				60.0,
 				0.45,

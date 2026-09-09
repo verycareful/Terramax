@@ -16,8 +16,12 @@ import com.fury.terramax.core.fluvial.DrainageSettings;
 import com.fury.terramax.core.fluvial.FlowLattice;
 import com.fury.terramax.core.plate.CrustType;
 import com.fury.terramax.core.terrain.HeightField;
+import com.fury.terramax.core.terrain.RangeType;
+import com.fury.terramax.core.terrain.TectonicHeight;
+import com.fury.terramax.core.terrain.TerrainSettings;
 import com.fury.terramax.core.terrain.UpliftHeight;
 import com.fury.terramax.core.plate.PlateBoundaryType;
+import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.region.RegionType;
 
 /**
@@ -104,6 +108,31 @@ public final class SimulatorMain {
 	 */
 	private static final int BASIN_SAMPLE_GRID = 200;
 
+	/** Samples per axis in the range census. Fine enough to resolve a range's width. */
+	private static final int RANGE_PROBE_GRID = 320;
+
+	/** Samples per axis when measuring the margin envelope. Coarser: it walks every margin. */
+	private static final int ENVELOPE_GRID = 160;
+
+	/** Bins across a range's half-width, so the profile shows its shape not its total. */
+	private static final int RANGE_PROFILE_BINS = 12;
+
+	/** Continuity walks. Several, so one unlucky line cannot decide the answer. */
+	private static final int RANGE_TRANSECTS = 8;
+
+	/** Length of each continuity walk, in blocks, which is also its sample count. */
+	private static final int RANGE_TRANSECT_BLOCKS = 20_000;
+
+	/** Spacing between continuity walks, in crust cells. Not a whole number, so they
+	 * do not all cross the lattice in the same phase. */
+	private static final double RANGE_TRANSECT_GAP_CELLS = 1.7;
+
+	/** A one-block rise this large is a discontinuity, not a slope, so it gets reported. */
+	private static final double STEP_REPORT_BLOCKS = 20.0;
+
+	/** Worst steps listed. Enough to see whether they share a cause. */
+	private static final int STEP_REPORT_LIMIT = 8;
+
 	private static final Path OUTPUT_DIR = Path.of("build", "renders");
 
 	private SimulatorMain() {
@@ -122,6 +151,25 @@ public final class SimulatorMain {
 
 		if (args.length > 0 && args[0].equals("--drainage-probe")) {
 			printDrainageProbe(new TerrainModel(SEED).snapshot());
+			return;
+		}
+
+		if (args.length > 0 && args[0].equals("--range-probe")) {
+			printRangeProbe(new TerrainModel(SEED));
+			return;
+		}
+
+		if (args.length > 3 && args[0].equals("--margins")) {
+			printMargins(new TerrainModel(SEED),
+					Double.parseDouble(args[1]), Double.parseDouble(args[2]),
+					Integer.parseInt(args[3]));
+			return;
+		}
+
+		if (args.length > 3 && args[0].equals("--inspect")) {
+			inspect(new TerrainModel(SEED).snapshot(),
+					Double.parseDouble(args[1]), Double.parseDouble(args[2]),
+					Double.parseDouble(args[3]), args.length > 4 ? args[4] : "inspect");
 			return;
 		}
 
@@ -1661,6 +1709,466 @@ public final class SimulatorMain {
 			final MapRenderer.TerrainLayer layer) throws IOException {
 		write(name, view, MapRenderer.renderTerrain(
 				world, view, layer, MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));
+	}
+
+	/**
+	 * Renders one named place, from coordinates a probe printed.
+	 *
+	 * <p>The probes report where their worst case is, and until now there was no way
+	 * to go and look at it: every render in this file is centred on the origin at a
+	 * fixed span. A number that names a location is only half an answer, and this is
+	 * the other half.
+	 *
+	 * <p>Writes a grayscale plan view and a west-to-east section through the same
+	 * point, because the two fail differently. A step in the surface is unmistakable
+	 * in section and can hide in plan view as an ordinary edge; an artefact with a
+	 * shape, a lattice line or a rectangle, is obvious in plan view and invisible in
+	 * any one section.
+	 */
+	private static void inspect(
+			final TerrainModel.Snapshot world,
+			final double worldX, final double worldZ, final double spanBlocks,
+			final String name) throws IOException {
+		Files.createDirectories(OUTPUT_DIR);
+
+		MapView view = new MapView(worldX, worldZ, spanBlocks, IMAGE_PIXELS);
+
+		System.out.printf("INSPECT %s at %,.0f, %,.0f across %,.0f blocks%n",
+				name, worldX, worldZ, spanBlocks);
+
+		writeTerrain(name + "-raw", view, world, MapRenderer.TerrainLayer.ELEVATION_RAW);
+		writeTerrain(name + "-hypsometric", view, world,
+				MapRenderer.TerrainLayer.ELEVATION_HYPSOMETRIC);
+
+		write(name + "-section", view, CrossSectionPlotter.plot(
+				world.terrainFor(view.blocksPerPixel()),
+				worldX - spanBlocks * 0.5, worldZ,
+				worldX + spanBlocks * 0.5, worldZ,
+				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL,
+				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT));
+
+		printSteps(world.uplift().tectonic(), worldX, worldZ, spanBlocks);
+	}
+
+	/**
+	 * The biggest one-block steps along the inspected section, and what changed at each.
+	 *
+	 * <p>A section image proves a wall is there and says nothing about why. This walks
+	 * the same line and reports, for the worst steps, which side of the boundary the
+	 * query landed on and what that made the margin classify as, which is the
+	 * difference between a steep slope and a discontinuity.
+	 */
+	private static void printSteps(
+			final TectonicHeight tectonic,
+			final double worldX, final double worldZ, final double spanBlocks) {
+		double startX = worldX - spanBlocks * 0.5;
+		int steps = (int) spanBlocks;
+
+		record Step(double x, double jump, String before, String after) {
+		}
+
+		var worst = new java.util.ArrayList<Step>();
+		TectonicHeight.Sample previous = tectonic.sample(startX, worldZ);
+
+		for (int i = 1; i < steps; i++) {
+			double x = startX + i;
+			TectonicHeight.Sample current = tectonic.sample(x, worldZ);
+			double jump = Math.abs(current.height() - previous.height());
+
+			if (jump >= STEP_REPORT_BLOCKS) {
+				worst.add(new Step(x, jump, describe(previous), describe(current)));
+			}
+
+			previous = current;
+		}
+
+		System.out.printf("  one-block steps of %,.0f blocks or more: %d%n",
+				STEP_REPORT_BLOCKS, worst.size());
+
+		worst.stream()
+				.sorted((a, b) -> Double.compare(b.jump(), a.jump()))
+				.limit(STEP_REPORT_LIMIT)
+				.forEach(step -> System.out.printf("    x=%,10.0f  %7.1f blocks   %s   ->   %s%n",
+						step.x(), step.jump(), step.before(), step.after()));
+	}
+
+	/** Own crust type and margin class, the two things a step is usually blamed on. */
+	private static String describe(final TectonicHeight.Sample sample) {
+		return String.format("%-11s %-21s base %5.0f rel %6.0f",
+				sample.plate().crust().crustType(), marginClass(sample.plate()),
+				sample.base(), sample.relief());
+	}
+
+	/**
+	 * Every margin in reach of a walk, one column at a time.
+	 *
+	 * <p>Relief is an average over margins, so when it misbehaves the question is
+	 * always which margins were in the average and what each contributed. A height
+	 * cannot answer that and neither can a section. This prints the terms.
+	 */
+	private static void printMargins(
+			final TerrainModel model, final double worldX, final double worldZ,
+			final int steps) {
+		var plates = model.snapshot().plates();
+		var terrain = model.terrainSettings();
+		double spacing = model.plateSettings().crustSpacingBlocks();
+		double rangeWidth = terrain.rangeWidthBlocks(spacing);
+		double blendWidth = terrain.blendWidthBlocks(spacing);
+
+		System.out.printf("MARGINS along x from %,.0f for %,d blocks at z=%,.0f%n",
+				worldX, steps, worldZ);
+		System.out.printf("  %10s %6s %8s   %s%n", "x", "count", "sum f.w", "each: type across weight");
+
+		for (int i = 0; i < steps; i++) {
+			double x = worldX + i;
+
+			var found = new java.util.ArrayList<String>();
+			double[] total = new double[1];
+
+			plates.forEachBoundary(x, worldZ, rangeWidth, blendWidth, boundary -> {
+				double falloff = dome(boundary.boundaryDistance(), rangeWidth);
+
+				total[0] += falloff * boundary.weight();
+				found.add(String.format("%s %,.0f w%.3f",
+						RangeType.of(boundary).name().charAt(0)
+								+ RangeType.of(boundary).name().substring(1, 4).toLowerCase(),
+						boundary.across(), boundary.weight()));
+			});
+
+			System.out.printf("  %,10.0f %6d %8.4f   %s%n",
+					x, found.size(), total[0], String.join(" | ", found));
+		}
+	}
+
+	/**
+	 * The generator's own falloff, repeated here so the probes measure what it does.
+	 *
+	 * <p>Deliberately identical to {@code MountainRidge.domeAt}. A probe that used a
+	 * linear taper instead reported a margin envelope of 0.374 where the real figure
+	 * was 0.549, which is the sort of error that sends a tuning pass after the wrong
+	 * constant.
+	 */
+	private static double dome(final double distance, final double width) {
+		if (distance >= width) {
+			return 0.0;
+		}
+
+		double t = distance / width;
+
+		return 1.0 - (t * t * (3.0 - 2.0 * t));
+	}
+
+	/**
+	 * What tectonic relief actually does, per class of margin.
+	 *
+	 * <p>Ranges are one undifferentiated relief function today. Before splitting them
+	 * into types this records what that single function produces: which classes of
+	 * margin the world is made of, how tall and how wide each comes out, and whether
+	 * the surface is continuous where the two sides of one boundary disagree about
+	 * what to build.
+	 *
+	 * <p>The continuity walk is the part no render shows. A subduction margin builds
+	 * an arc on the continental side and a trench on the oceanic side, and both sides
+	 * evaluate their own profile at a falloff of 1 where they meet, so the step
+	 * between them is whatever the two peaks differ by.
+	 */
+	private static void printRangeProbe(final TerrainModel model) {
+		TerrainModel.Snapshot world = model.snapshot();
+		TectonicHeight tectonic = world.uplift().tectonic();
+		TerrainSettings terrain = model.terrainSettings();
+		double spacing = model.plateSettings().crustSpacingBlocks();
+		double rangeWidth = terrain.rangeWidthBlocks(spacing);
+
+		System.out.println("RANGE PROBE, tectonic relief before regions and rivers");
+		System.out.printf("  crust spacing        %,.0f blocks%n", spacing);
+		System.out.printf("  range half-width     %,.0f blocks (%.2f x spacing)%n",
+				rangeWidth, terrain.rangeWidthFraction());
+		System.out.printf("  blend width          %,.0f blocks%n",
+				terrain.blendWidthBlocks(spacing));
+		System.out.println();
+
+		printMarginCensus(tectonic, spacing, rangeWidth);
+		printEnvelope(tectonic, spacing, rangeWidth, terrain.blendWidthBlocks(spacing));
+		printReliefProfile(tectonic, spacing, rangeWidth);
+		printReliefContinuity(tectonic, spacing);
+	}
+
+	/**
+	 * The fraction of its profile a range actually gets to build.
+	 *
+	 * <p>Relief is a sum of weighted profiles over a divisor, so the multiplier
+	 * finally applied to a range's shape is {@code sum(f.w) / max(max(f), sum(f.w))}.
+	 * If that sits below one along an ordinary stretch of margin then every range in
+	 * the world is quietly shortened by the shortfall, and neither a height setting
+	 * nor a profile will show why. This computes the multiplier the way the generator
+	 * does, so tuning the junction softness has a number to aim at.
+	 */
+	private static void printEnvelope(
+			final TectonicHeight tectonic, final double spacing,
+			final double rangeWidth, final double blendWidth) {
+		var plates = tectonic.plates();
+		double span = spacing * CONTINENTAL_SPAN_CELLS;
+		double step = span / ENVELOPE_GRID;
+
+		double total = 0.0;
+		double bestWeight = 0.0;
+		int counted = 0;
+		int full = 0;
+		int starved = 0;
+
+		for (int iz = 0; iz < ENVELOPE_GRID; iz++) {
+			for (int ix = 0; ix < ENVELOPE_GRID; ix++) {
+				double x = -span * 0.5 + ix * step;
+				double z = -span * 0.5 + iz * step;
+
+				// Only where a range is meant to stand. Deep in a plate interior the
+				// answer is correctly nothing, and would drag the average down.
+				if (tectonic.sample(x, z).plate().boundaryDistance() > rangeWidth * 0.5) {
+					continue;
+				}
+
+				// weighted total, strongest falloff, strongest margin weight
+				double[] acc = new double[3];
+
+				plates.forEachBoundary(x, z, rangeWidth, blendWidth, boundary -> {
+					double falloff = dome(boundary.boundaryDistance(), rangeWidth);
+
+					acc[0] += falloff * boundary.weight();
+					acc[1] = Math.max(acc[1], falloff);
+					acc[2] = Math.max(acc[2], boundary.weight());
+				});
+
+				if (acc[1] <= 0.0) {
+					continue;
+				}
+
+				double scale = acc[0] / Math.max(acc[1], acc[0]);
+
+				total += scale;
+				bestWeight += acc[2];
+				counted++;
+
+				if (scale >= 0.95) {
+					full++;
+				} else if (scale < 0.5) {
+					starved++;
+				}
+			}
+		}
+
+		System.out.printf("  height actually built, on the inner half of ranges, %,d columns%n",
+				counted);
+		System.out.printf("    mean fraction of profile     %6.3f   (1.000 is a range at full height)%n",
+				counted == 0 ? 0.0 : total / counted);
+		System.out.printf("    strongest margin weight      %6.3f%n",
+				counted == 0 ? 0.0 : bestWeight / counted);
+		System.out.printf("    at full height               %6.1f%%%n",
+				counted == 0 ? 0.0 : 100.0 * full / counted);
+		System.out.printf("    below half                   %6.1f%%%n",
+				counted == 0 ? 0.0 : 100.0 * starved / counted);
+		System.out.println();
+	}
+
+	/**
+	 * Names the class of margin a sample sits on, at the granularity relief uses.
+	 *
+	 * <p>Reports the range type, which is a property of the pair of crust cells, and
+	 * separately which flank of it the column stands on where that differs. Splitting
+	 * a one-sided range into "arc" and "trench" as if they were different kinds of
+	 * margin is what hid the discontinuity between them: they are one range, and the
+	 * question is which half you are on.
+	 */
+	private static String marginClass(final PlateSample plate) {
+		RangeType type = RangeType.of(plate);
+
+		if (type == RangeType.SUBDUCTION_ARC) {
+			return plate.isOverridingPlate() ? "subduction, arc" : "subduction, trench";
+		}
+
+		return type.name().toLowerCase().replace('_', ' ');
+	}
+
+	/** How much of the world each class of margin owns, and how tall it stands. */
+	private static void printMarginCensus(
+			final TectonicHeight tectonic, final double spacing, final double rangeWidth) {
+		double span = spacing * CONTINENTAL_SPAN_CELLS;
+		double step = span / RANGE_PROBE_GRID;
+
+		Map<String, double[]> byClass = new HashMap<>();
+		int land = 0;
+
+		for (int iz = 0; iz < RANGE_PROBE_GRID; iz++) {
+			for (int ix = 0; ix < RANGE_PROBE_GRID; ix++) {
+				TectonicHeight.Sample sample = tectonic.sample(
+						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
+
+				// count, total height, tallest height, total |relief|, inside a range
+				double[] acc = byClass.computeIfAbsent(
+						marginClass(sample.plate()),
+						key -> new double[] {0.0, 0.0, Double.NEGATIVE_INFINITY, 0.0, 0.0});
+
+				acc[0]++;
+				acc[1] += sample.height();
+				acc[2] = Math.max(acc[2], sample.height());
+				acc[3] += Math.abs(sample.relief());
+
+				if (sample.plate().boundaryDistance() < rangeWidth) {
+					acc[4]++;
+				}
+
+				if (sample.height() > 0.0) {
+					land++;
+				}
+			}
+		}
+
+		int total = RANGE_PROBE_GRID * RANGE_PROBE_GRID;
+
+		System.out.printf("  margin class census, %,d columns over %,.0f blocks%n", total, span);
+		System.out.printf("    %-22s %7s %8s %8s %10s %9s%n",
+				"class", "share", "mean y", "max y", "mean|rel|", "in range");
+
+		byClass.entrySet().stream()
+				.sorted((a, b) -> Double.compare(b.getValue()[0], a.getValue()[0]))
+				.forEach(entry -> {
+					double[] acc = entry.getValue();
+
+					System.out.printf("    %-22s %6.1f%% %8.0f %8.0f %10.0f %8.1f%%%n",
+							entry.getKey(), 100.0 * acc[0] / total, acc[1] / acc[0], acc[2],
+							acc[3] / acc[0], 100.0 * acc[4] / acc[0]);
+				});
+
+		System.out.printf("    %-22s %6.1f%%%n", "land", 100.0 * land / total);
+		System.out.println();
+	}
+
+	/** Mean relief against distance from the boundary, which is the range's shape. */
+	private static void printReliefProfile(
+			final TectonicHeight tectonic, final double spacing, final double rangeWidth) {
+		double span = spacing * CONTINENTAL_SPAN_CELLS;
+		double step = span / RANGE_PROBE_GRID;
+		double binWidth = rangeWidth / RANGE_PROFILE_BINS;
+
+		Map<String, double[]> totals = new HashMap<>();
+		Map<String, double[]> counts = new HashMap<>();
+
+		for (int iz = 0; iz < RANGE_PROBE_GRID; iz++) {
+			for (int ix = 0; ix < RANGE_PROBE_GRID; ix++) {
+				TectonicHeight.Sample sample = tectonic.sample(
+						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
+
+				int bin = (int) (sample.plate().boundaryDistance() / binWidth);
+
+				if (bin >= RANGE_PROFILE_BINS) {
+					continue;
+				}
+
+				String key = marginClass(sample.plate());
+
+				totals.computeIfAbsent(key, k -> new double[RANGE_PROFILE_BINS])[bin]
+						+= sample.relief();
+				counts.computeIfAbsent(key, k -> new double[RANGE_PROFILE_BINS])[bin]++;
+			}
+		}
+
+		System.out.printf("  relief profile, mean blocks per %,.0f-block bin out from the boundary%n",
+				binWidth);
+
+		totals.entrySet().stream()
+				.sorted(Map.Entry.comparingByKey())
+				.forEach(entry -> {
+					double[] sum = entry.getValue();
+					double[] count = counts.get(entry.getKey());
+					StringBuilder row = new StringBuilder(String.format("    %-22s", entry.getKey()));
+
+					for (int bin = 0; bin < RANGE_PROFILE_BINS; bin++) {
+						row.append(count[bin] == 0.0
+								? String.format("%7s", "-")
+								: String.format("%7.0f", sum[bin] / count[bin]));
+					}
+
+					System.out.println(row);
+				});
+
+		System.out.println();
+	}
+
+	/**
+	 * The largest step the surface takes between two adjacent blocks.
+	 *
+	 * <p>Walked at one-block spacing because the discontinuity being hunted is
+	 * exactly one block wide. It sits on the bisector, where the query's own crust
+	 * cell flips and with it the profile the point is built from, so a walk at any
+	 * coarser spacing averages it away into an ordinary slope.
+	 */
+	private static void printReliefContinuity(
+			final TectonicHeight tectonic, final double spacing) {
+		double worstStep = 0.0;
+		double worstStepAtX = 0.0;
+		double worstStepAtZ = 0.0;
+		String worstStepClass = "";
+
+		double switchedTotal = 0.0;
+		int switchedCount = 0;
+		double switchedWorst = 0.0;
+		String switchedWorstPair = "";
+
+		double heldTotal = 0.0;
+		double heldWorst = 0.0;
+		int heldCount = 0;
+
+		for (int transect = 0; transect < RANGE_TRANSECTS; transect++) {
+			double z = (transect - RANGE_TRANSECTS * 0.5) * spacing * RANGE_TRANSECT_GAP_CELLS;
+			double startX = -RANGE_TRANSECT_BLOCKS * 0.5;
+
+			TectonicHeight.Sample previous = tectonic.sample(startX, z);
+
+			for (int i = 1; i < RANGE_TRANSECT_BLOCKS; i++) {
+				double x = startX + i;
+				TectonicHeight.Sample current = tectonic.sample(x, z);
+
+				double jump = Math.abs(current.height() - previous.height());
+				String before = marginClass(previous.plate());
+				String after = marginClass(current.plate());
+
+				if (before.equals(after)) {
+					heldTotal += jump;
+					heldCount++;
+					heldWorst = Math.max(heldWorst, jump);
+				} else {
+					switchedTotal += jump;
+					switchedCount++;
+
+					if (jump > switchedWorst) {
+						switchedWorst = jump;
+						switchedWorstPair = before + " -> " + after;
+					}
+				}
+
+				if (jump > worstStep) {
+					worstStep = jump;
+					worstStepAtX = x;
+					worstStepAtZ = z;
+					worstStepClass = before.equals(after) ? after : before + " -> " + after;
+				}
+
+				previous = current;
+			}
+		}
+
+		System.out.printf("  continuity, %d transects x %,d blocks at 1-block steps%n",
+				RANGE_TRANSECTS, RANGE_TRANSECT_BLOCKS);
+		System.out.printf("    mean step, class held        %7.3f blocks over %,d steps%n",
+				heldCount == 0 ? 0.0 : heldTotal / heldCount, heldCount);
+		System.out.printf("    mean step, class switched    %7.3f blocks over %,d steps%n",
+				switchedCount == 0 ? 0.0 : switchedTotal / switchedCount, switchedCount);
+		System.out.printf("    worst held step              %7.1f blocks   (the control: ordinary ground)%n",
+				heldWorst);
+		System.out.printf("    worst switched step          %7.1f blocks, %s%n",
+				switchedWorst, switchedWorstPair);
+		System.out.printf("    worst step anywhere          %7.1f blocks at %,.0f, %,.0f, %s%n",
+				worstStep, worstStepAtX, worstStepAtZ, worstStepClass);
+		System.out.println();
 	}
 
 	private static void write(
