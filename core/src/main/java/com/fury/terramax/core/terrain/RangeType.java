@@ -22,12 +22,11 @@ import com.fury.terramax.core.plate.PlateSample;
  * side evaluating -80 at the same falloff of 1 left a step of the difference between
  * them along the whole margin.
  *
- * <p><b>Three of the design's seven range types are not here yet.</b> Fossil sutures
- * need interior seams to carry a hashed age, hotspots need a point field that does
- * not hang off plate geometry at all, and fault blocks need a near-periodic
- * across-range function. Each is its own slice. What this covers is the four types
- * that plate boundaries alone can produce, plus the two margins that are not ranges
- * and the seam that is not a boundary.
+ * <p><b>Two of the design's seven range types are not here yet.</b> Hotspots need a
+ * point field that does not hang off plate geometry at all, and fault blocks need a
+ * near-periodic across-range function. Each is its own slice. What this covers is the
+ * five types the crust lattice can produce on its own, plus the two margins that are
+ * not ranges.
  */
 public enum RangeType {
 	/**
@@ -90,14 +89,25 @@ public enum RangeType {
 	TRANSFORM,
 
 	/**
-	 * A seam between two cells of the same plate. Not a margin at all, yet.
+	 * A seam between two cells of the same plate: a collision that finished.
 	 *
-	 * <p>These are the fossil sutures of the design, and there are more of them than
-	 * anything else: they are 22.7 percent of the world where the nearest margin of
-	 * any kind is one of these. They carry no relief until the suture slice gives
-	 * them a hashed age.
+	 * <p><b>The elegant one, and the most common.</b> A multi-cell plate is a cluster
+	 * of crust cells, and a seam between two cells of one plate is exactly what a
+	 * suture is: a boundary that was active once and is not any more. No new
+	 * machinery is needed to place them, because the crust lattice has been drawing
+	 * them all along. Plate interiors are 22.7 percent of the world.
+	 *
+	 * <p>A decay state of {@link #CONTINENTAL_COLLISION} rather than a mechanism of
+	 * its own: what the Himalaya becomes in 200 million years. Each seam carries a
+	 * hashed age, and age decides everything. Height falls with it, and so does the
+	 * seam's say in what its neighbourhood looks like, because a suture worn flat is
+	 * not a quiet feature but no feature at all.
+	 *
+	 * <p>This is what replaces the diffuse interior noise the design condemned.
+	 * Interior ranges are <i>linear</i> because they trace an old collision, and that
+	 * is why noise never looked right: it can only make lumps.
 	 */
-	INTERIOR_SEAM;
+	FOSSIL_SUTURE;
 
 	/**
 	 * Classifies the margin between two crust cells.
@@ -114,7 +124,7 @@ public enum RangeType {
 					: margin.isSubducting() ? SUBDUCTION_ARC : ISLAND_ARC;
 			case DIVERGENT -> divergent(margin);
 			case TRANSFORM -> TRANSFORM;
-			case NONE -> INTERIOR_SEAM;
+			case NONE -> FOSSIL_SUTURE;
 		};
 	}
 

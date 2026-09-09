@@ -538,11 +538,7 @@ public final class PlateMap {
 						(offsetX * -axisZ + offsetZ * axisX) / separation,
 						weight);
 
-				// Seams inside one plate build nothing yet, and averaging them in
-				// would dilute the margins that do. Fossil sutures are a later slice.
-				if (boundary.boundaryType() != PlateBoundaryType.NONE) {
-					visitor.visit(boundary);
-				}
+				visitor.visit(boundary);
 			}
 		}
 

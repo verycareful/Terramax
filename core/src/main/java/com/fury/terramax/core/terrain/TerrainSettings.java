@@ -26,6 +26,8 @@ package com.fury.terramax.core.terrain;
  * @param continentalRiftDrop      depth of a rift valley where continent pulls apart
  * @param riftShoulderRise         height of the uplifted shoulders flanking that valley
  * @param oceanicRidgeRise         height of a mid-ocean ridge where ocean floor spreads
+ * @param fossilSutureRise         peak rise of a fossil suture at full survival, in
+ *                                 blocks, before its hashed age decays it
  * @param transformRelief          relief at transform margins, which build very little
  * @param reliefVariationFraction  how much relief varies along a range, as a fraction of its height
  * @param detailAmplitude          small-scale roughness applied everywhere above sea level
@@ -45,6 +47,7 @@ public record TerrainSettings(
 		double continentalRiftDrop,
 		double riftShoulderRise,
 		double oceanicRidgeRise,
+		double fossilSutureRise,
 		double transformRelief,
 		double reliefVariationFraction,
 		double detailAmplitude,
@@ -126,6 +129,13 @@ public record TerrainSettings(
 				// mountain range with a gash in it rather than as a valley.
 				240.0,
 				260.0,
+
+				// The ceiling for the youngest seam in a belt, not the typical one. A
+				// collision at 1,400 worn to a third is an Appalachian: a range, and
+				// forested to the summit rather than anywhere near the treeline. Age
+				// takes most seams well below this, so the measured mean is 18 blocks
+				// against a tallest of 520.
+				500.0,
 				60.0,
 				0.45,
 				28.0,

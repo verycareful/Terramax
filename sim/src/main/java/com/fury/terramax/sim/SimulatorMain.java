@@ -108,6 +108,9 @@ public final class SimulatorMain {
 	 */
 	private static final int BASIN_SAMPLE_GRID = 200;
 
+	/** Timed passes in --cost mode. Enough to see whether a reading is stable. */
+	private static final int COST_PASSES = 3;
+
 	/** Samples per axis in the range census. Fine enough to resolve a range's width. */
 	private static final int RANGE_PROBE_GRID = 320;
 
@@ -151,6 +154,21 @@ public final class SimulatorMain {
 
 		if (args.length > 0 && args[0].equals("--drainage-probe")) {
 			printDrainageProbe(new TerrainModel(SEED).snapshot());
+			return;
+		}
+
+		if (args.length > 0 && args[0].equals("--cost")) {
+			TerrainModel.Snapshot costWorld = new TerrainModel(SEED).snapshot();
+
+			// Repeated, because one reading is not a measurement. The full run reports
+			// a single figure and two of them differed by 27 percent across a change
+			// that could only have made the work larger, which is how this mode came
+			// to exist.
+			for (int pass = 0; pass < COST_PASSES; pass++) {
+				printChunkCost(costWorld);
+			}
+
+			printDrainageCost(costWorld);
 			return;
 		}
 
@@ -1983,6 +2001,15 @@ public final class SimulatorMain {
 
 		if (type == RangeType.SUBDUCTION_ARC) {
 			return plate.isOverridingPlate() ? "subduction, arc" : "subduction, trench";
+		}
+
+		// Split by crust, because sutures exist only on continental crust and lumping
+		// the two together buries them: an average over every plate interior in the
+		// world is mostly ocean floor, where the answer is correctly zero.
+		if (type == RangeType.FOSSIL_SUTURE) {
+			return plate.crust().isContinental()
+					? "fossil suture, land"
+					: "fossil suture, ocean";
 		}
 
 		return type.name().toLowerCase().replace('_', ' ');

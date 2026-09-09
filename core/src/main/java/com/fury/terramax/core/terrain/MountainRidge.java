@@ -3,6 +3,7 @@ package com.fury.terramax.core.terrain;
 import com.fury.terramax.core.plate.PlateMap;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.util.FractalNoise2D;
+import com.fury.terramax.core.util.Hashing;
 
 /**
  * Relief created at plate margins.
@@ -80,11 +81,80 @@ public final class MountainRidge {
 	/** How wide those shoulders are. */
 	private static final double RIFT_SHOULDER_WIDTH = 0.45;
 
+	/** Decorrelates a suture's age from every other draw made against its identity. */
+	private static final long SALT_SUTURE_AGE = 0x2545F4914F6CDD1DL;
+
+	/** Keeps the suture belt field independent of the relief and grain fields. */
+	private static final long SALT_SUTURE_BELT = 0x8A5CD789635D2DFFL;
+
+	/**
+	 * Wavelength of the field deciding where sutures run, in crust spacings.
+	 *
+	 * <p>Long, because a suture is a continental-scale feature. At 6,000-block cells
+	 * this is 72,000 blocks, a little under two plate widths, so a belt crosses many
+	 * cells and reads as one structure rather than as a patch.
+	 */
+	private static final double SUTURE_BELT_WAVELENGTH_FACTOR = 12.0;
+
+	/**
+	 * Field value above which a seam is part of a suture belt.
+	 *
+	 * <p>High, so belts are the exception. Most plate interior is quiet ground, which
+	 * is what makes the belts worth finding.
+	 */
+	private static final double SUTURE_BELT_THRESHOLD = 0.55;
+
+	/** Octaves in the belt field. Two, because a suture belt is a broad shape. */
+	private static final int SUTURE_BELT_OCTAVES = 2;
+
+	/**
+	 * How quickly a belt reaches full strength past its threshold.
+	 *
+	 * <p>Narrow, so the belt reads as a gate rather than as a second amplitude. It
+	 * still has to be a gradient rather than a step, or the edge of every belt would
+	 * be a cliff.
+	 */
+	private static final double SUTURE_BELT_SOFTNESS = 0.06;
+
+	/**
+	 * How sharply a suture's relief falls away with age.
+	 *
+	 * <p>Above one, so most seams are old and nearly gone and a few are young and
+	 * carry real relief. A linear draw would make the average seam a middling range
+	 * and cover plate interiors in uniform corrugation, which is the diffuse
+	 * interior noise this replaces, wearing a better hat.
+	 */
+	private static final double SUTURE_AGE_FALLOFF = 1.8;
+
+	/**
+	 * How much deeper a suture's valleys cut than any other range's, as a multiple of
+	 * the shared grain depth.
+	 *
+	 * <p>The strongest grain of any type, because that is the one thing a worn
+	 * collision has more of than a young one. Folded beds erode at different rates, so
+	 * what survives is parallel ridge and valley: the Appalachians, the Urals. A young
+	 * range has not had time to differentiate.
+	 */
+	private static final double SUTURE_GRAIN_DEPTH = 1.5;
+
+	/**
+	 * How wide a suture is, as a fraction of the ordinary range half-width.
+	 *
+	 * <p>Narrow, because an old range is eroded inward as well as downward. This is
+	 * not a cosmetic choice: at the full half-width a suture is 3,180 blocks across
+	 * while seams are 6,000 apart, so neighbouring sutures tile the continent and the
+	 * result reads as ground that got higher rather than as a range that is there.
+	 * Measured, loosening the belt gate to compensate pushed land from 34.5 percent of
+	 * the map to 44.6 while the tallest suture still only reached y=188.
+	 */
+	private static final double SUTURE_WIDTH_FACTOR = 0.45;
+
 	private final TerrainSettings settings;
 	private final double rangeWidthBlocks;
 	private final double blendWidthBlocks;
 	private final FractalNoise2D reliefVariation;
 	private final FractalNoise2D grain;
+	private final FractalNoise2D sutureBelt;
 
 	public MountainRidge(final long seed, final TerrainSettings settings, final double crustSpacing) {
 		this.settings = settings;
@@ -99,6 +169,10 @@ public final class MountainRidge {
 		// share one and there would be no grain.
 		this.grain = FractalNoise2D.standard(
 				seed ^ SALT_GRAIN, settings.grain().octaves(), 1.0);
+
+		this.sutureBelt = FractalNoise2D.standard(
+				seed ^ SALT_SUTURE_BELT, SUTURE_BELT_OCTAVES,
+				crustSpacing * SUTURE_BELT_WAVELENGTH_FACTOR);
 	}
 
 	/**
@@ -161,13 +235,24 @@ public final class MountainRidge {
 
 		PlateMap.Boundaries margins = plates.forEachBoundary(
 				worldX, worldZ, rangeWidthBlocks, blendWidthBlocks, boundary -> {
-			double falloff = falloff(boundary.boundaryDistance());
+			RangeType type = RangeType.of(boundary);
+			double falloff = domeAt(boundary.boundaryDistance(), reach(type));
 
 			if (falloff <= 0.0) {
 				return;
 			}
 
-			double weight = falloff * boundary.weight();
+			// A worn-out suture loses its say as well as its height. Zero relief is
+			// not the same as no feature: a dead seam admitted at full weight would
+			// take a share of the blend from the live margin next to it and drag a
+			// range down toward nothing for no reason anyone could point at.
+			double presence = type == RangeType.FOSSIL_SUTURE ? survival(boundary) : 1.0;
+
+			double weight = falloff * boundary.weight() * presence;
+
+			if (weight <= 0.0) {
+				return;
+			}
 
 			acc[0] += weight * reliefAt(boundary, worldX, worldZ);
 			acc[1] += weight;
@@ -192,7 +277,8 @@ public final class MountainRidge {
 	 * distant margin count for as much as the one underfoot.
 	 */
 	private double reliefAt(final PlateSample sample, final double worldX, final double worldZ) {
-		double peak = profile(RangeType.of(sample), sample);
+		RangeType type = RangeType.of(sample);
+		double peak = profile(type, sample);
 
 		if (peak == 0.0) {
 			return 0.0;
@@ -200,7 +286,16 @@ public final class MountainRidge {
 
 		// Relative motion scales relief: plates barely converging build barely
 		// anything. Magnitude is bounded by construction, so this stays in [0, 1].
-		double motion = Math.min(1.0, Math.abs(sample.convergence()) + sample.shear());
+		//
+		// A fossil suture is exempt, and has to be. The two cells belong to one plate
+		// and so have no relative motion at all, which is the definition of the type
+		// rather than a reason to build nothing. Left in, it multiplied every suture
+		// in the world by zero: the census reported plate interiors at a mean of -45
+		// with no relief anywhere, unchanged from before they existed. Age already
+		// does this job for them, through the weight.
+		double motion = type == RangeType.FOSSIL_SUTURE
+				? 1.0
+				: Math.min(1.0, Math.abs(sample.convergence()) + sample.shear());
 
 		// Vary height along the range so it is not a uniform wall. Without this a
 		// mountain range is the same height for its entire length, which reads as
@@ -208,7 +303,7 @@ public final class MountainRidge {
 		double variation = 1.0 + reliefVariation.sample(worldX, worldZ)
 				* settings.reliefVariationFraction();
 
-		return peak * motion * Math.max(0.0, variation) * grainFactor(sample);
+		return peak * motion * Math.max(0.0, variation) * grainFactor(type, sample);
 	}
 
 	/**
@@ -226,7 +321,7 @@ public final class MountainRidge {
 	 * range gets 200-block-scale valleys and a 1,400-block range gets deep ones,
 	 * which is the erosion argument for scaling relief with local relief.
 	 */
-	private double grainFactor(final PlateSample sample) {
+	private double grainFactor(final RangeType type, final PlateSample sample) {
 		var g = settings.grain();
 
 		// Signed across, not the magnitude. Reading the magnitude mirrored the grain
@@ -237,7 +332,11 @@ public final class MountainRidge {
 
 		double crest = Math.pow(Math.max(0.0, ridged), GRAIN_SHARPNESS);
 
-		return 1.0 - g.depth() * (1.0 - crest);
+		double depth = type == RangeType.FOSSIL_SUTURE
+				? Math.min(1.0, g.depth() * SUTURE_GRAIN_DEPTH)
+				: g.depth();
+
+		return 1.0 - depth * (1.0 - crest);
 	}
 
 	/**
@@ -282,10 +381,16 @@ public final class MountainRidge {
 
 			case TRANSFORM -> settings.transformRelief() * dome(Math.abs(across));
 
-			// A quiet coast, and a seam inside a plate. Both build nothing: the first
-			// because a passive margin has no engine, the second until fossil sutures
-			// give it an age.
-			case PASSIVE_MARGIN, INTERIOR_SEAM -> 0.0;
+			// A worn-down collision: the same symmetric dome, lower. Age is not applied
+			// here. It scales this margin's weight in evaluate instead, which decays
+			// the height by exactly the same factor while also taking away the
+			// influence of a seam that is no longer a feature. Applying it in both
+			// places squares it.
+			case FOSSIL_SUTURE -> settings.fossilSutureRise()
+					* domeAt(Math.abs(across), reach(RangeType.FOSSIL_SUTURE));
+
+			// A quiet coast builds nothing, and that is the whole of its character.
+			case PASSIVE_MARGIN -> 0.0;
 		};
 	}
 
@@ -333,6 +438,71 @@ public final class MountainRidge {
 	}
 
 	/**
+	 * How far this type of range reaches.
+	 *
+	 * <p>Used for the profile and for the blend weight alike, and it has to be both.
+	 * A margin that stopped building at one distance while still claiming influence
+	 * out to another would take a share of the blend from its neighbours across
+	 * ground it does nothing to.
+	 */
+	private double reach(final RangeType type) {
+		return type == RangeType.FOSSIL_SUTURE
+				? rangeWidthBlocks * SUTURE_WIDTH_FACTOR
+				: rangeWidthBlocks;
+	}
+
+	/**
+	 * How much of a fossil suture is left, in {@code [0, 1]}.
+	 *
+	 * <p>Three factors, and the first two are what stop sutures from being everywhere.
+	 *
+	 * <p><b>Continental crust only.</b> Ocean floor is young and recycled; it has no
+	 * finished collisions in it because nothing that old survives there. Without this
+	 * test every ocean basin in the world was lifted, and land went from 33.9 percent
+	 * of the map to 60.2.
+	 *
+	 * <p><b>A belt, not a lottery per seam.</b> Sutures are linear because they trace
+	 * one collision across a continent, so the decision is read from a low-frequency
+	 * field at the margin's own midpoint rather than hashed per seam. Adjacent seams
+	 * then agree, and what appears is a band of worn ridges running for tens of
+	 * thousands of blocks with quiet ground either side. Hashing each seam
+	 * independently gives isolated fragments and, with 6,000-block cells, corrugates
+	 * an entire continent: measured as roughly 50 blocks of relief added to the far
+	 * bins of every other range type in the world.
+	 *
+	 * <p><b>Then age.</b> Drawn toward the old end, so even inside a belt the seams
+	 * vary from a respectable range down to nothing.
+	 *
+	 * <p>Scales influence as well as height, so a suture worn to nothing has no say in
+	 * what its neighbours look like.
+	 */
+	private double survival(final PlateSample sample) {
+		if (!sample.lowCrust().isContinental() || !sample.highCrust().isContinental()) {
+			return 0.0;
+		}
+
+		double midX = (sample.lowCrust().siteX() + sample.highCrust().siteX()) * 0.5;
+		double midZ = (sample.lowCrust().siteZ() + sample.highCrust().siteZ()) * 0.5;
+
+		// The belt decides where, and saturates. Letting its value scale the height
+		// as well made every suture a fraction of one: the field rarely runs far past
+		// its own threshold, so the tallest suture in the world reached y=118 against
+		// a setting of 300. Age is what decides how much survives.
+		double belt = smoothstep(
+				(sutureBelt.sampleUnit(midX, midZ) - SUTURE_BELT_THRESHOLD) / SUTURE_BELT_SOFTNESS);
+
+		if (belt <= 0.0) {
+			return 0.0;
+		}
+
+		double age = Hashing.unitDouble(
+				sample.marginId(), sample.lowCrust().cellX(), sample.lowCrust().cellZ(),
+				SALT_SUTURE_AGE);
+
+		return belt * Math.pow(1.0 - age, SUTURE_AGE_FALLOFF);
+	}
+
+	/**
 	 * Smooth hump of a given width, reaching zero at its edge.
 	 *
 	 * <p>Uses the complement of smoothstep, whose derivative is zero at both ends. A
@@ -344,6 +514,12 @@ public final class MountainRidge {
 	 * summing humps that are each smooth and each reach zero means a profile cannot
 	 * be discontinuous however the humps are arranged.
 	 */
+	private static double smoothstep(final double x) {
+		double t = Math.max(0.0, Math.min(1.0, x));
+
+		return t * t * (3.0 - 2.0 * t);
+	}
+
 	private static double domeAt(final double distance, final double width) {
 		if (distance >= width) {
 			return 0.0;
