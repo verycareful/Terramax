@@ -46,6 +46,11 @@ public final class TectonicHeight implements HeightField {
 	 * the nearest boundary and for the relief ran it twice.
 	 *
 	 * @param plate       the nearest boundary and both sides of it
+	 * @param type        the landform that boundary builds. Not always derivable from
+	 *                    {@code plate}: whether a rift is one torn valley or a province
+	 *                    of fault blocks depends on a region field that only
+	 *                    {@code MountainRidge} holds, so the answer is carried here
+	 *                    rather than left for callers to reconstruct
 	 * @param base        crust base elevation, blended smoothly across every cell seam
 	 *                    by {@code PlateMap}. Blending it here against the nearest
 	 *                    differing <i>plate</i> left a step at every seam inside a
@@ -53,7 +58,9 @@ public final class TectonicHeight implements HeightField {
 	 * @param relief      mountains, arcs, trenches and rifts
 	 * @param interiority 0 at a plate boundary, 1 once past the blend width
 	 */
-	public record Sample(PlateSample plate, double base, double relief, double interiority) {
+	public record Sample(
+			PlateSample plate, RangeType type,
+			double base, double relief, double interiority) {
 		/** The tectonic surface here. */
 		public double height() {
 			return base + relief;
@@ -62,6 +69,17 @@ public final class TectonicHeight implements HeightField {
 
 	public PlateMap plates() {
 		return plates;
+	}
+
+	/**
+	 * The relief generator, for probes that walk margins one at a time.
+	 *
+	 * <p>Exposed because a margin's landform is no longer a pure function of the pair.
+	 * Anything enumerating boundaries and naming them has to ask the same object the
+	 * generator asks, or it reports a different world than the one being built.
+	 */
+	public MountainRidge ridge() {
+		return ridge;
 	}
 
 	public double seaLevel() {
@@ -74,7 +92,7 @@ public final class TectonicHeight implements HeightField {
 
 		double interiority = smoothstep(plate.boundaryDistance() / blendWidthBlocks);
 
-		return new Sample(plate, ridged.base(), ridged.relief(), interiority);
+		return new Sample(plate, ridged.type(), ridged.base(), ridged.relief(), interiority);
 	}
 
 	@Override

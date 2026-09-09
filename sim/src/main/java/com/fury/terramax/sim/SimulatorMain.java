@@ -114,6 +114,18 @@ public final class SimulatorMain {
 	/** Samples per axis in the range census. Fine enough to resolve a range's width. */
 	private static final int RANGE_PROBE_GRID = 320;
 
+	/**
+	 * Probe cells per side of a bucket in {@code --find}.
+	 *
+	 * <p>Sixteen cells is 42,000 blocks, a few margins across. Wide enough that a
+	 * bucket scoring highly is a province rather than one lucky margin, narrow enough
+	 * that its centre is somewhere worth pointing a render at.
+	 */
+	private static final int FIND_BUCKET_CELLS = 16;
+
+	/** Places {@code --find} reports. Enough to pick a second if the first disappoints. */
+	private static final int FIND_REPORT_LIMIT = 6;
+
 	/** Samples per axis when measuring the margin envelope. Coarser: it walks every margin. */
 	private static final int ENVELOPE_GRID = 160;
 
@@ -174,6 +186,24 @@ public final class SimulatorMain {
 
 		if (args.length > 0 && args[0].equals("--range-probe")) {
 			printRangeProbe(new TerrainModel(SEED));
+			return;
+		}
+
+		if (args.length > 1 && args[0].equals("--find")) {
+			printWhere(new TerrainModel(SEED), RangeType.valueOf(args[1].toUpperCase()));
+			return;
+		}
+
+		// Split out of the full run because the answer it gives is the one a terrain
+		// change is judged on and the renders around it cost a quarter of an hour.
+		// Endorheic share and playa share are downstream of terrain shape, so tuning
+		// terrain against them means measuring them repeatedly.
+		if (args.length > 0 && args[0].equals("--basins")) {
+			TerrainModel basinModel = new TerrainModel(SEED);
+			double basinSpacing = basinModel.plateSettings().crustSpacingBlocks();
+
+			printBasinStatistics(basinModel.snapshot(), new MapView(
+					0, 0, basinSpacing * CONTINENTAL_SPAN_CELLS, IMAGE_PIXELS));
 			return;
 		}
 
@@ -1813,7 +1843,7 @@ public final class SimulatorMain {
 	/** Own crust type and margin class, the two things a step is usually blamed on. */
 	private static String describe(final TectonicHeight.Sample sample) {
 		return String.format("%-11s %-21s base %5.0f rel %6.0f",
-				sample.plate().crust().crustType(), marginClass(sample.plate()),
+				sample.plate().crust().crustType(), marginClass(sample),
 				sample.base(), sample.relief());
 	}
 
@@ -1827,7 +1857,13 @@ public final class SimulatorMain {
 	private static void printMargins(
 			final TerrainModel model, final double worldX, final double worldZ,
 			final int steps) {
-		var plates = model.snapshot().plates();
+		TerrainModel.Snapshot world = model.snapshot();
+		var plates = world.plates();
+
+		// The generator's own classifier, not RangeType.of. Two types are decided
+		// against region fields this object holds, so asking it is the only way a probe
+		// names the same landform the world builds.
+		var ridge = world.uplift().tectonic().ridge();
 		var terrain = model.terrainSettings();
 		double spacing = model.plateSettings().crustSpacingBlocks();
 		double rangeWidth = terrain.rangeWidthBlocks(spacing);
@@ -1844,12 +1880,17 @@ public final class SimulatorMain {
 			double[] total = new double[1];
 
 			plates.forEachBoundary(x, worldZ, rangeWidth, blendWidth, boundary -> {
-				double falloff = dome(boundary.boundaryDistance(), rangeWidth);
+				RangeType type = ridge.rangeType(boundary);
+
+				// The type's own reach, not the shared half-width. Sutures and fault
+				// blocks do not use the same one, and a probe that assumed they did
+				// would report weight for ground the margin has already stopped
+				// building on.
+				double falloff = dome(boundary.boundaryDistance(), ridge.reach(type));
 
 				total[0] += falloff * boundary.weight();
 				found.add(String.format("%s %,.0f w%.3f",
-						RangeType.of(boundary).name().charAt(0)
-								+ RangeType.of(boundary).name().substring(1, 4).toLowerCase(),
+						type.name().charAt(0) + type.name().substring(1, 4).toLowerCase(),
 						boundary.across(), boundary.weight()));
 			});
 
@@ -1909,6 +1950,65 @@ public final class SimulatorMain {
 		printEnvelope(tectonic, spacing, rangeWidth, terrain.blendWidthBlocks(spacing));
 		printReliefProfile(tectonic, spacing, rangeWidth);
 		printReliefContinuity(tectonic, spacing);
+	}
+
+	/**
+	 * Where in the world a given range type is thickest on the ground.
+	 *
+	 * <p>Exists because a census proves a landform is <b>present</b> and a render proves
+	 * it is <b>right</b>, and the render needs somewhere to point. Fault blocks are
+	 * 1,200 blocks apart, which is one and a half pixels in the continental view and
+	 * invisible; the local view is fixed at the origin and landed on a coastline. Both
+	 * showed nothing, and neither was evidence of anything.
+	 *
+	 * <p>Buckets the probe grid coarsely and ranks buckets by how much of each is the
+	 * type asked for, rather than reporting the first hit. A single column of a type
+	 * says nothing about whether the landform around it holds together.
+	 */
+	private static void printWhere(final TerrainModel model, final RangeType target) {
+		TectonicHeight tectonic = model.snapshot().uplift().tectonic();
+		double spacing = model.plateSettings().crustSpacingBlocks();
+		double span = spacing * CONTINENTAL_SPAN_CELLS;
+		double step = span / RANGE_PROBE_GRID;
+		int side = RANGE_PROBE_GRID / FIND_BUCKET_CELLS;
+
+		double[] hits = new double[side * side];
+		double[] height = new double[side * side];
+
+		for (int iz = 0; iz < side * FIND_BUCKET_CELLS; iz++) {
+			for (int ix = 0; ix < side * FIND_BUCKET_CELLS; ix++) {
+				TectonicHeight.Sample sample = tectonic.sample(
+						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
+
+				if (sample.type() != target) {
+					continue;
+				}
+
+				int bucket = (iz / FIND_BUCKET_CELLS) * side + ix / FIND_BUCKET_CELLS;
+
+				hits[bucket]++;
+				height[bucket] += sample.height();
+			}
+		}
+
+		double bucketBlocks = step * FIND_BUCKET_CELLS;
+		double total = FIND_BUCKET_CELLS * (double) FIND_BUCKET_CELLS;
+
+		System.out.printf("WHERE %s is thickest, buckets of %,.0f blocks%n",
+				target.name().toLowerCase().replace('_', ' '), bucketBlocks);
+
+		java.util.stream.IntStream.range(0, hits.length)
+				.boxed()
+				.sorted((a, b) -> Double.compare(hits[b], hits[a]))
+				.limit(FIND_REPORT_LIMIT)
+				.forEach(bucket -> System.out.printf(
+						"  %,10.0f %,10.0f   %5.1f%% of bucket   mean y %5.0f%n",
+						-span * 0.5 + (bucket % side + 0.5) * bucketBlocks,
+						-span * 0.5 + (bucket / side + 0.5) * bucketBlocks,
+						100.0 * hits[bucket] / total,
+						hits[bucket] == 0.0 ? 0.0 : height[bucket] / hits[bucket]));
+
+		System.out.println();
 	}
 
 	/**
@@ -1996,8 +2096,14 @@ public final class SimulatorMain {
 	 * margin is what hid the discontinuity between them: they are one range, and the
 	 * question is which half you are on.
 	 */
-	private static String marginClass(final PlateSample plate) {
-		RangeType type = RangeType.of(plate);
+	private static String marginClass(final TectonicHeight.Sample sample) {
+		PlateSample plate = sample.plate();
+
+		// Taken from the sample rather than recomputed. Two types are decided against a
+		// region field the plate pair cannot see, so RangeType.of would report a fault
+		// block province as an ordinary rift and the census would show a landform that
+		// covers whole provinces as not existing at all.
+		RangeType type = sample.type();
 
 		if (type == RangeType.SUBDUCTION_ARC) {
 			return plate.isOverridingPlate() ? "subduction, arc" : "subduction, trench";
@@ -2029,10 +2135,11 @@ public final class SimulatorMain {
 				TectonicHeight.Sample sample = tectonic.sample(
 						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
 
-				// count, total height, tallest height, total |relief|, inside a range
+				// count, total height, tallest height, total |relief|, inside a range,
+				// below sea level
 				double[] acc = byClass.computeIfAbsent(
-						marginClass(sample.plate()),
-						key -> new double[] {0.0, 0.0, Double.NEGATIVE_INFINITY, 0.0, 0.0});
+						marginClass(sample),
+						key -> new double[] {0.0, 0.0, Double.NEGATIVE_INFINITY, 0.0, 0.0, 0.0});
 
 				acc[0]++;
 				acc[1] += sample.height();
@@ -2041,6 +2148,14 @@ public final class SimulatorMain {
 
 				if (sample.plate().boundaryDistance() < rangeWidth) {
 					acc[4]++;
+				}
+
+				// A mean height says nothing about a landform whose whole character is
+				// that it alternates. A province averaging y=30 can be half ranges at
+				// y=200 and half basins under water, and only one of those halves grows
+				// salt flats.
+				if (sample.height() <= 0.0) {
+					acc[5]++;
 				}
 
 				if (sample.height() > 0.0) {
@@ -2052,17 +2167,17 @@ public final class SimulatorMain {
 		int total = RANGE_PROBE_GRID * RANGE_PROBE_GRID;
 
 		System.out.printf("  margin class census, %,d columns over %,.0f blocks%n", total, span);
-		System.out.printf("    %-22s %7s %8s %8s %10s %9s%n",
-				"class", "share", "mean y", "max y", "mean|rel|", "in range");
+		System.out.printf("    %-22s %7s %8s %8s %10s %9s %9s%n",
+				"class", "share", "mean y", "max y", "mean|rel|", "in range", "under sea");
 
 		byClass.entrySet().stream()
 				.sorted((a, b) -> Double.compare(b.getValue()[0], a.getValue()[0]))
 				.forEach(entry -> {
 					double[] acc = entry.getValue();
 
-					System.out.printf("    %-22s %6.1f%% %8.0f %8.0f %10.0f %8.1f%%%n",
+					System.out.printf("    %-22s %6.1f%% %8.0f %8.0f %10.0f %8.1f%% %8.1f%%%n",
 							entry.getKey(), 100.0 * acc[0] / total, acc[1] / acc[0], acc[2],
-							acc[3] / acc[0], 100.0 * acc[4] / acc[0]);
+							acc[3] / acc[0], 100.0 * acc[4] / acc[0], 100.0 * acc[5] / acc[0]);
 				});
 
 		System.out.printf("    %-22s %6.1f%%%n", "land", 100.0 * land / total);
@@ -2090,7 +2205,7 @@ public final class SimulatorMain {
 					continue;
 				}
 
-				String key = marginClass(sample.plate());
+				String key = marginClass(sample);
 
 				totals.computeIfAbsent(key, k -> new double[RANGE_PROFILE_BINS])[bin]
 						+= sample.relief();
@@ -2155,8 +2270,8 @@ public final class SimulatorMain {
 				TectonicHeight.Sample current = tectonic.sample(x, z);
 
 				double jump = Math.abs(current.height() - previous.height());
-				String before = marginClass(previous.plate());
-				String after = marginClass(current.plate());
+				String before = marginClass(previous);
+				String after = marginClass(current);
 
 				if (before.equals(after)) {
 					heldTotal += jump;

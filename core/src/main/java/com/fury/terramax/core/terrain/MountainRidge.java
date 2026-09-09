@@ -149,12 +149,90 @@ public final class MountainRidge {
 	 */
 	private static final double SUTURE_WIDTH_FACTOR = 0.45;
 
+	/** Keeps stretched provinces from landing on suture belts every time. */
+	private static final long SALT_STRETCH_BELT = 0x6A09E667F3BCC909L;
+
+	/** Wanders the fault block train along the range, so it is not a barcode. */
+	private static final long SALT_FAULT_PHASE = 0xBB67AE8584CAA73BL;
+
+	/**
+	 * Wavelength of the field deciding where crust is stretched, in crust spacings.
+	 *
+	 * <p>Shorter than the suture belt. A suture traces one collision across a whole
+	 * continent and should read as a single line; a stretched province is a patch,
+	 * and the Basin and Range is about 800km across rather than 5,000 long.
+	 */
+	private static final double STRETCH_BELT_WAVELENGTH_FACTOR = 7.0;
+
+	/**
+	 * Field value above which a continental rift is part of a stretched province.
+	 *
+	 * <p>A hard threshold, unlike the suture belt's gradient, and it can be hard
+	 * because it decides a <b>type</b> rather than an amount. The type is read at the
+	 * margin's own midpoint, so it is constant along that margin and there is no
+	 * position at which it changes. Where a stretched province abuts an ordinary rift
+	 * the two margins overlap, both carry weight, and {@link #evaluate} averages their
+	 * profiles: the transition is a blend between two landforms rather than a step
+	 * inside one.
+	 */
+	private static final double STRETCH_BELT_THRESHOLD = 0.50;
+
+	/** Octaves in the stretch field. Two, because a province is a broad shape. */
+	private static final int STRETCH_BELT_OCTAVES = 2;
+
+	/** Share of each fault block cycle that is flat basin floor. */
+	private static final double FAULT_FLOOR_SHARE = 0.30;
+
+	/** Share of each cycle spent climbing the fault scarp. */
+	private static final double FAULT_SCARP_SHARE = 0.15;
+
+	/**
+	 * How far the train of blocks wanders along the range, in cycles.
+	 *
+	 * <p>Without it every block is a perfect stripe running the full length of the
+	 * margin, which is the one thing that would give the mechanism away. A third of a
+	 * cycle is enough for ranges to lens out and step sideways past each other, the way
+	 * real fault blocks do, while still reading as a train.
+	 */
+	private static final double FAULT_PHASE_JITTER = 0.35;
+
+	/** Wavelength of that wander, in crust spacings. */
+	private static final double FAULT_PHASE_WAVELENGTH_FACTOR = 1.4;
+
+	/**
+	 * How much the wander varies across the range as well as along it.
+	 *
+	 * <p>Small, and bounded for a reason. This makes block spacing vary within one
+	 * province, which is real, but the phase is added to {@code across / spacing} and
+	 * that sum has to stay increasing or the train folds back on itself and a block ends
+	 * up with two crests. At the default wavelengths the phase term contributes about
+	 * three percent of the slope of the term it perturbs, so the sum stays increasing
+	 * with a wide margin. Raising either this or the jitter far enough would break that,
+	 * and the two multiply.
+	 */
+	private static final double FAULT_PHASE_SKEW = 0.15;
+
+	/**
+	 * Grain depth on fault blocks, as a multiple of the shared depth.
+	 *
+	 * <p>Reduced, because here the grain is competing with the landform rather than
+	 * making it. Every other range gets its corrugation from noise sampled across the
+	 * range; a fault block province gets its corrugation from the periodic profile, and
+	 * noise at a similar wavelength would only blur the scarps that are the whole
+	 * point. What is left roughens the blocks along their length, and roughens the
+	 * basin floors just enough to break a long trough into separate closed basins.
+	 */
+	private static final double FAULT_GRAIN_DEPTH = 0.4;
+
 	private final TerrainSettings settings;
 	private final double rangeWidthBlocks;
 	private final double blendWidthBlocks;
+	private final double faultBlockSpacingBlocks;
 	private final FractalNoise2D reliefVariation;
 	private final FractalNoise2D grain;
 	private final FractalNoise2D sutureBelt;
+	private final FractalNoise2D stretchBelt;
+	private final FractalNoise2D faultPhase;
 
 	public MountainRidge(final long seed, final TerrainSettings settings, final double crustSpacing) {
 		this.settings = settings;
@@ -173,6 +251,51 @@ public final class MountainRidge {
 		this.sutureBelt = FractalNoise2D.standard(
 				seed ^ SALT_SUTURE_BELT, SUTURE_BELT_OCTAVES,
 				crustSpacing * SUTURE_BELT_WAVELENGTH_FACTOR);
+
+		this.faultBlockSpacingBlocks = settings.faultBlockSpacingBlocks(crustSpacing);
+
+		this.stretchBelt = FractalNoise2D.standard(
+				seed ^ SALT_STRETCH_BELT, STRETCH_BELT_OCTAVES,
+				crustSpacing * STRETCH_BELT_WAVELENGTH_FACTOR);
+
+		this.faultPhase = FractalNoise2D.standard(
+				seed ^ SALT_FAULT_PHASE, 2,
+				crustSpacing * FAULT_PHASE_WAVELENGTH_FACTOR);
+	}
+
+	/**
+	 * What landform this margin builds, as opposed to what the two cells are doing.
+	 *
+	 * <p>{@link RangeType#of} answers the structural question from the pair alone. This
+	 * adds the one thing the pair cannot know: which region it sits in. A continental
+	 * rift inside a belt of stretched crust is a {@link RangeType#FAULT_BLOCK} province
+	 * rather than a single torn valley, and being stretched is true of a place, not of
+	 * a seam.
+	 *
+	 * <p>Read at the margin's <b>midpoint</b>, which is the same trick sutures use and
+	 * for the same reason. Sampling the belt at the query instead would let one margin
+	 * be a rift at one end and a fault block province at the other. Sampling at the
+	 * midpoint makes the answer a property of the pair, so it is constant along the
+	 * margin, identical from both sides, and neighbouring margins inside one belt agree
+	 * and tile into a province.
+	 */
+	public RangeType rangeType(final PlateSample sample) {
+		RangeType type = RangeType.of(sample);
+
+		if (type != RangeType.CONTINENTAL_RIFT) {
+			return type;
+		}
+
+		return beltAt(stretchBelt, sample) > STRETCH_BELT_THRESHOLD
+				? RangeType.FAULT_BLOCK
+				: type;
+	}
+
+	/** Reads a region field at the midpoint of the pair, where both sides agree. */
+	private static double beltAt(final FractalNoise2D field, final PlateSample sample) {
+		return field.sampleUnit(
+				(sample.lowCrust().siteX() + sample.highCrust().siteX()) * 0.5,
+				(sample.lowCrust().siteZ() + sample.highCrust().siteZ()) * 0.5);
 	}
 
 	/**
@@ -214,10 +337,15 @@ public final class MountainRidge {
 	 * Everything one margin search yields.
 	 *
 	 * @param nearest boundary nearest this position, for callers naming the margin
+	 * @param type    landform that boundary builds, which is not always derivable from
+	 *                the boundary itself. Carried rather than recomputed because
+	 *                {@link #rangeType} reads a noise field, so asking twice costs
+	 *                twice, and because a caller outside this package has no way to
+	 *                ask at all
 	 * @param relief  height offset in blocks, combined over every boundary in reach
 	 * @param base    crust base elevation, already blended across cell seams
 	 */
-	public record Result(PlateSample nearest, double relief, double base) {
+	public record Result(PlateSample nearest, RangeType type, double relief, double base) {
 	}
 
 	/**
@@ -235,7 +363,7 @@ public final class MountainRidge {
 
 		PlateMap.Boundaries margins = plates.forEachBoundary(
 				worldX, worldZ, rangeWidthBlocks, blendWidthBlocks, boundary -> {
-			RangeType type = RangeType.of(boundary);
+			RangeType type = rangeType(boundary);
 			double falloff = domeAt(boundary.boundaryDistance(), reach(type));
 
 			if (falloff <= 0.0) {
@@ -254,7 +382,7 @@ public final class MountainRidge {
 				return;
 			}
 
-			acc[0] += weight * reliefAt(boundary, worldX, worldZ);
+			acc[0] += weight * reliefAt(type, boundary, worldX, worldZ);
 			acc[1] += weight;
 
 			// Tracked without the margin's own weight, deliberately. This is the
@@ -265,6 +393,7 @@ public final class MountainRidge {
 
 		return new Result(
 				margins.nearest(),
+				rangeType(margins.nearest()),
 				acc[2] <= 0.0 ? 0.0 : acc[0] / Math.max(acc[2], acc[1]),
 				margins.crustBase());
 	}
@@ -276,8 +405,9 @@ public final class MountainRidge {
 	 * be weighed against each other. Folding the weight in here instead would let a
 	 * distant margin count for as much as the one underfoot.
 	 */
-	private double reliefAt(final PlateSample sample, final double worldX, final double worldZ) {
-		RangeType type = RangeType.of(sample);
+	private double reliefAt(
+			final RangeType type, final PlateSample sample,
+			final double worldX, final double worldZ) {
 		double peak = profile(type, sample);
 
 		if (peak == 0.0) {
@@ -332,9 +462,11 @@ public final class MountainRidge {
 
 		double crest = Math.pow(Math.max(0.0, ridged), GRAIN_SHARPNESS);
 
-		double depth = type == RangeType.FOSSIL_SUTURE
-				? Math.min(1.0, g.depth() * SUTURE_GRAIN_DEPTH)
-				: g.depth();
+		double depth = switch (type) {
+			case FOSSIL_SUTURE -> Math.min(1.0, g.depth() * SUTURE_GRAIN_DEPTH);
+			case FAULT_BLOCK -> g.depth() * FAULT_GRAIN_DEPTH;
+			default -> g.depth();
+		};
 
 		return 1.0 - depth * (1.0 - crest);
 	}
@@ -376,6 +508,8 @@ public final class MountainRidge {
 					settings.oceanicArcRise(), settings.trenchDrop());
 
 			case CONTINENTAL_RIFT -> riftProfile(across);
+
+			case FAULT_BLOCK -> faultBlockProfile(across, sample.alongBoundary());
 
 			case OCEANIC_RIDGE -> settings.oceanicRidgeRise() * dome(Math.abs(across));
 
@@ -422,6 +556,73 @@ public final class MountainRidge {
 	}
 
 	/**
+	 * A train of tilted blocks on a subsided province: Basin and Range.
+	 *
+	 * <p><b>The only profile here that repeats, and repeating is the whole idea.</b>
+	 * Every other range type is a hump, or a sum of humps, that rises once and falls
+	 * once. Where extension is spread over a province rather than concentrated on one
+	 * line, the crust breaks into many blocks and the same landform happens over and
+	 * over across the range. Expressed as a periodic function of the signed across-axis
+	 * it costs no more than the humps do.
+	 *
+	 * <p>Two terms. The subsidence is a plain dome, so the province is a broad shallow
+	 * bowl: thinned crust sits lower, and without it the basins between blocks would be
+	 * open troughs running out of the province at both ends rather than closed ones.
+	 * The blocks ride on top of it. Both are multiplied by the same envelope, so the
+	 * entire landform fades out at the edge of the margin's reach and the last block
+	 * before that edge is a small one rather than a cliff.
+	 */
+	private double faultBlockProfile(final double across, final double alongBoundary) {
+		double envelope = dome(Math.abs(across));
+
+		if (envelope <= 0.0) {
+			return 0.0;
+		}
+
+		// Phase read in the margin's own frame, so both sides of the province see the
+		// same train. Sampling it in world coordinates would be equally continuous but
+		// would not turn with the margin, and a set of blocks running at an angle to
+		// the range they belong to is worse than a set running perfectly straight.
+		double phase = faultPhase.sample(alongBoundary, across * FAULT_PHASE_SKEW)
+				* FAULT_PHASE_JITTER;
+
+		double cycle = across / faultBlockSpacingBlocks + phase;
+
+		return envelope * (settings.faultBlockRise() * halfGraben(cycle - Math.floor(cycle))
+				- settings.faultBlockSubsidence());
+	}
+
+	/**
+	 * One tilted block, as a fraction of its height, over one cycle in {@code [0, 1)}.
+	 *
+	 * <p>Flat floor, then a steep scarp, then a long gentle dip slope back down. That
+	 * order is what makes it a half graben rather than a row of hills: the block is a
+	 * slab of crust hinged along one edge and dropped along the other, so the fault
+	 * face is short and steep and the top of the slab is a ramp. At the default shares
+	 * the scarp climbs about three and a half times as steeply as the dip slope
+	 * descends, and every range in the province leans the same way, which is the thing
+	 * you notice from the air.
+	 *
+	 * <p>Assembled from smoothsteps, whose derivative vanishes at both ends, so the
+	 * floor meets the scarp and the scarp meets the dip slope without a crease and the
+	 * end of one cycle meets the start of the next at zero. The crest is the only sharp
+	 * feature and it is sharp by construction, not by accident.
+	 */
+	private static double halfGraben(final double t) {
+		if (t < FAULT_FLOOR_SHARE) {
+			return 0.0;
+		}
+
+		if (t < FAULT_FLOOR_SHARE + FAULT_SCARP_SHARE) {
+			return smoothstep((t - FAULT_FLOOR_SHARE) / FAULT_SCARP_SHARE);
+		}
+
+		double dipShare = 1.0 - FAULT_FLOOR_SHARE - FAULT_SCARP_SHARE;
+
+		return 1.0 - smoothstep((t - FAULT_FLOOR_SHARE - FAULT_SCARP_SHARE) / dipShare);
+	}
+
+	/**
 	 * A smooth hump centred somewhere along the across-axis.
 	 *
 	 * <p>Centre and width are fractions of the range half-width, so every profile
@@ -445,7 +646,7 @@ public final class MountainRidge {
 	 * out to another would take a share of the blend from its neighbours across
 	 * ground it does nothing to.
 	 */
-	private double reach(final RangeType type) {
+	public double reach(final RangeType type) {
 		return type == RangeType.FOSSIL_SUTURE
 				? rangeWidthBlocks * SUTURE_WIDTH_FACTOR
 				: rangeWidthBlocks;
@@ -481,15 +682,12 @@ public final class MountainRidge {
 			return 0.0;
 		}
 
-		double midX = (sample.lowCrust().siteX() + sample.highCrust().siteX()) * 0.5;
-		double midZ = (sample.lowCrust().siteZ() + sample.highCrust().siteZ()) * 0.5;
-
 		// The belt decides where, and saturates. Letting its value scale the height
 		// as well made every suture a fraction of one: the field rarely runs far past
 		// its own threshold, so the tallest suture in the world reached y=118 against
 		// a setting of 300. Age is what decides how much survives.
 		double belt = smoothstep(
-				(sutureBelt.sampleUnit(midX, midZ) - SUTURE_BELT_THRESHOLD) / SUTURE_BELT_SOFTNESS);
+				(beltAt(sutureBelt, sample) - SUTURE_BELT_THRESHOLD) / SUTURE_BELT_SOFTNESS);
 
 		if (belt <= 0.0) {
 			return 0.0;
@@ -528,16 +726,6 @@ public final class MountainRidge {
 		double t = distance / width;
 
 		return 1.0 - (t * t * (3.0 - 2.0 * t));
-	}
-
-	/**
-	 * How much say this margin has here, and how far its influence reaches.
-	 *
-	 * <p>Distinct from the profile now. This decides the blend between margins that
-	 * overlap; the profile decides what each one builds.
-	 */
-	private double falloff(final double boundaryDistance) {
-		return dome(boundaryDistance);
 	}
 
 }

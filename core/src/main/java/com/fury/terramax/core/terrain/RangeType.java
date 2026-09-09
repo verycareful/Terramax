@@ -22,11 +22,20 @@ import com.fury.terramax.core.plate.PlateSample;
  * side evaluating -80 at the same falloff of 1 left a step of the difference between
  * them along the whole margin.
  *
- * <p><b>Two of the design's seven range types are not here yet.</b> Hotspots need a
- * point field that does not hang off plate geometry at all, and fault blocks need a
- * near-periodic across-range function. Each is its own slice. What this covers is the
- * five types the crust lattice can produce on its own, plus the two margins that are
- * not ranges.
+ * <p><b>One of the design's seven range types is not here yet.</b> Hotspots need a
+ * point field that does not hang off plate geometry at all, which is its own slice.
+ * Everything else the crust lattice can produce on its own is here, plus the two
+ * margins that are not ranges.
+ *
+ * <p><b>Not every type is decidable from the pair alone.</b> {@link #of} answers the
+ * structural question, what these two cells are doing to each other, and that is all
+ * the pair knows. Two types are a <i>region</i> the margin happens to lie in rather
+ * than a property of the margin, and both are resolved by
+ * {@link MountainRidge#rangeType} against a belt field: {@link #FAULT_BLOCK}, which is
+ * a rift inside a province of stretched crust, and the belt membership of
+ * {@link #FOSSIL_SUTURE}. Callers wanting the landform rather than the mechanism
+ * should ask {@code MountainRidge}, or read the type off
+ * {@code TectonicHeight.Sample}, which carries it.
  */
 public enum RangeType {
 	/**
@@ -69,6 +78,30 @@ public enum RangeType {
 	 * behind once the rift becomes an ocean, is a later slice.
 	 */
 	CONTINENTAL_RIFT,
+
+	/**
+	 * Continent stretched over a whole province rather than torn along one line.
+	 *
+	 * <p>Basin and Range. Where extension is distributed instead of localised the crust
+	 * breaks into a train of blocks, each tilted, so the landform repeats: a flat basin
+	 * floor, a steep fault scarp rising out of it, then a long gentle dip slope back
+	 * down to the next floor. That is a <b>near-periodic function of the signed
+	 * across-axis</b>, and it is the entire mechanism. Nothing else in the world needs
+	 * a shape that repeats, so nothing else was built to have one.
+	 *
+	 * <p>Chosen from {@link #CONTINENTAL_RIFT} by a belt field, because being stretched
+	 * is a property of a region and not of a seam. Neighbouring rifts inside one belt
+	 * therefore agree, and their ranges tile into a province many margins wide, which
+	 * is what a province is. Tiling was the defect that had to be designed out of
+	 * {@link #FOSSIL_SUTURE}; here it is the requirement.
+	 *
+	 * <p><b>Its basins are the reason to want it.</b> They are flat floored and closed,
+	 * so they drain to no sea, and the drainage solver already knows what to do with
+	 * that: it weighs rainfall against evaporation and leaves a terminal lake or a dry
+	 * floor. Salt flats fall out of terrain and climate rather than being placed, and
+	 * they can fall out at any latitude.
+	 */
+	FAULT_BLOCK,
 
 	/** Ocean floor spreading. A broad symmetric swell, the most ordinary shape here. */
 	OCEANIC_RIDGE,
@@ -116,6 +149,10 @@ public enum RangeType {
 	 * {@code isSubducting} and the crust types of the two halves are all properties
 	 * of the pair, so this returns the same type from either side and from every
 	 * position near the margin.
+	 *
+	 * <p>Never returns {@link #FAULT_BLOCK}. Whether a rift is part of a stretched
+	 * province is a question about the region around it, which the pair cannot answer;
+	 * {@link MountainRidge#rangeType} asks it.
 	 */
 	public static RangeType of(final PlateSample margin) {
 		return switch (margin.boundaryType()) {
@@ -136,8 +173,16 @@ public enum RangeType {
 		return margin.lowCrust().isContinental() ? CONTINENTAL_RIFT : OCEANIC_RIDGE;
 	}
 
-	/** True where the type's profile is a mirror image about the margin. */
+	/**
+	 * True where the type's profile is a mirror image about the margin.
+	 *
+	 * <p>The two arcs are asymmetric because a trench faces one way. {@link #FAULT_BLOCK}
+	 * is asymmetric for a different reason: every block in the train tilts the same
+	 * way, so the shape repeats rather than reflects. Both are still identical from
+	 * either side of the margin, because both read the signed across-axis, which the
+	 * pair agrees on.
+	 */
 	public boolean isSymmetric() {
-		return this != SUBDUCTION_ARC && this != ISLAND_ARC;
+		return this != SUBDUCTION_ARC && this != ISLAND_ARC && this != FAULT_BLOCK;
 	}
 }

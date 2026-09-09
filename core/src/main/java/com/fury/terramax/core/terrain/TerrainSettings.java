@@ -25,6 +25,14 @@ package com.fury.terramax.core.terrain;
  * @param trenchDrop               depth of the trench on the subducting side
  * @param continentalRiftDrop      depth of a rift valley where continent pulls apart
  * @param riftShoulderRise         height of the uplifted shoulders flanking that valley
+ * @param faultBlockRise           height of one tilted block above the basin floor beside
+ *                                 it, in blocks
+ * @param faultBlockSubsidence     how far a stretched province sits below the ground
+ *                                 around it, in blocks. Extension thins crust, so the
+ *                                 whole province is lower, and this is what closes its
+ *                                 basins rather than leaving them as open troughs
+ * @param faultBlockSpacingFraction distance from one fault block to the next, in crust
+ *                                 spacings. Sets how many ranges a province contains
  * @param oceanicRidgeRise         height of a mid-ocean ridge where ocean floor spreads
  * @param fossilSutureRise         peak rise of a fossil suture at full survival, in
  *                                 blocks, before its hashed age decays it
@@ -46,6 +54,9 @@ public record TerrainSettings(
 		double trenchDrop,
 		double continentalRiftDrop,
 		double riftShoulderRise,
+		double faultBlockRise,
+		double faultBlockSubsidence,
+		double faultBlockSpacingFraction,
 		double oceanicRidgeRise,
 		double fossilSutureRise,
 		double transformRelief,
@@ -128,6 +139,23 @@ public record TerrainSettings(
 				// shoulders rise 2 to 3km above them, which is why the rift reads as a
 				// mountain range with a gash in it rather than as a valley.
 				240.0,
+
+				// Basin and Range crests stand about 2,500m over the floors beside
+				// them. The collision rise fixes the scale at 1,400 blocks for
+				// Everest's 8,800m, so 2,500m is 400, and 420 allows for flanks that
+				// are narrower here than on Earth.
+				420.0,
+
+				// Those floors sit around 600m below the Colorado Plateau next door,
+				// which is 95 blocks on the same conversion. This is the number that
+				// decides whether basins close, so it is measured against the endorheic
+				// share rather than taken from the analogy alone.
+				110.0,
+
+				// 1,200 blocks between ranges, against 25 to 50km on Earth. Puts a
+				// little over five ranges across one margin's width, and provinces tile,
+				// so a belt holds many more than five.
+				0.20,
 				260.0,
 
 				// The ceiling for the youngest seam in a belt, not the typical one. A
@@ -156,5 +184,9 @@ public record TerrainSettings(
 
 	public double rangeWidthBlocks(final double crustSpacing) {
 		return crustSpacing * rangeWidthFraction;
+	}
+
+	public double faultBlockSpacingBlocks(final double crustSpacing) {
+		return crustSpacing * faultBlockSpacingFraction;
 	}
 }
