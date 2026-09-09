@@ -56,7 +56,7 @@ public final class StatisticsPanel extends JPanel {
 
 		pending = new Thread(() -> {
 			TerrainStatistics stats = TerrainStatistics.measure(
-					world, view, MapPanel.SEA_LEVEL, TerrainStatistics.LIVE_GRID);
+					world, view, WorldBounds.SEA_LEVEL, TerrainStatistics.LIVE_GRID);
 
 			if (!Thread.currentThread().isInterrupted()) {
 				SwingUtilities.invokeLater(() -> body.setText(format(stats)));
@@ -104,7 +104,7 @@ public final class StatisticsPanel extends JPanel {
 		out.append(String.format("mean       %,.0f<br>", s.meanHeight()));
 		out.append(String.format("above sea  %.1f%%<br>", s.aboveSeaShare() * 100));
 		out.append(String.format("uses       %.0f%% of dim<br>",
-				s.dimensionUsage(MapPanel.MIN_Y, MapPanel.MAX_Y) * 100));
+				s.dimensionUsage(WorldBounds.MIN_Y, WorldBounds.MAX_Y) * 100));
 
 		out.append("<br><b>MOISTURE</b><br>");
 		out.append(String.format("rain       %.3f<br>", s.minPrecipitation()));
@@ -114,7 +114,7 @@ public final class StatisticsPanel extends JPanel {
 
 		// Flag the two hard failures rather than leaving them to be spotted in a
 		// number. Terrain outside the dimension is clipped in game, silently.
-		if (s.minHeight() < MapPanel.MIN_Y || s.maxHeight() > MapPanel.MAX_Y) {
+		if (s.minHeight() < WorldBounds.MIN_Y || s.maxHeight() > WorldBounds.MAX_Y) {
 			out.append("<br><font color='#ff6b6b'><b>OUT OF BOUNDS</b></font><br>");
 		}
 

@@ -2,6 +2,7 @@ package com.fury.terramax.sim;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,6 +24,10 @@ import com.fury.terramax.core.terrain.UpliftHeight;
 import com.fury.terramax.core.plate.PlateBoundaryType;
 import com.fury.terramax.core.plate.PlateSample;
 import com.fury.terramax.core.region.RegionType;
+import com.fury.terramax.sim.probe.Probe;
+import com.fury.terramax.sim.probe.ProbeContext;
+import com.fury.terramax.sim.probe.ProbeRegistry;
+import com.fury.terramax.sim.probe.Probes;
 
 /**
  * Entry point for the standalone terrain simulator.
@@ -169,28 +174,37 @@ public final class SimulatorMain {
 			return;
 		}
 
+		if (args.length > 0 && args[0].equals("--probes")) {
+			listProbes();
+			return;
+		}
+
+		if (args.length > 1 && args[0].equals("--probe")) {
+			runProbes(new TerrainModel(SEED), List.of(args[1]), tail(args, 2));
+			return;
+		}
+
+		// Three passes, because one reading is not a measurement. Two readings of
+		// identical code differed by 27 percent across a change that could only have
+		// made the work larger, which is how this mode came to exist.
 		if (args.length > 0 && args[0].equals("--cost")) {
-			TerrainModel.Snapshot costWorld = new TerrainModel(SEED).snapshot();
+			TerrainModel costModel = new TerrainModel(SEED);
 
-			// Repeated, because one reading is not a measurement. The full run reports
-			// a single figure and two of them differed by 27 percent across a change
-			// that could only have made the work larger, which is how this mode came
-			// to exist.
-			for (int pass = 0; pass < COST_PASSES; pass++) {
-				printChunkCost(costWorld);
-			}
-
-			printDrainageCost(costWorld);
+			runProbes(costModel, List.of("chunk-cost"), new String[] {String.valueOf(COST_PASSES)});
+			runProbes(costModel, List.of("drainage-cost"), new String[0]);
 			return;
 		}
 
 		if (args.length > 0 && args[0].equals("--range-probe")) {
-			printRangeProbe(new TerrainModel(SEED));
+			TerrainModel rangeModel = new TerrainModel(SEED);
+
+			printRangeHeader(rangeModel);
+			runProbes(rangeModel, ProbeRegistry.RANGE_SUITE, new String[0]);
 			return;
 		}
 
 		if (args.length > 1 && args[0].equals("--find")) {
-			printWhere(new TerrainModel(SEED), RangeType.valueOf(args[1].toUpperCase()));
+			runProbes(new TerrainModel(SEED), List.of("find"), tail(args, 1));
 			return;
 		}
 
@@ -199,18 +213,12 @@ public final class SimulatorMain {
 		// Endorheic share and playa share are downstream of terrain shape, so tuning
 		// terrain against them means measuring them repeatedly.
 		if (args.length > 0 && args[0].equals("--basins")) {
-			TerrainModel basinModel = new TerrainModel(SEED);
-			double basinSpacing = basinModel.plateSettings().crustSpacingBlocks();
-
-			printBasinStatistics(basinModel.snapshot(), new MapView(
-					0, 0, basinSpacing * CONTINENTAL_SPAN_CELLS, IMAGE_PIXELS));
+			runProbes(new TerrainModel(SEED), List.of("basins"), new String[0]);
 			return;
 		}
 
 		if (args.length > 3 && args[0].equals("--margins")) {
-			printMargins(new TerrainModel(SEED),
-					Double.parseDouble(args[1]), Double.parseDouble(args[2]),
-					Integer.parseInt(args[3]));
+			runProbes(new TerrainModel(SEED), List.of("margins"), tail(args, 1));
 			return;
 		}
 
@@ -305,14 +313,78 @@ public final class SimulatorMain {
 		writeCrossSection(world, spacing);
 
 		printStatistics(TerrainStatistics.measure(
-				world, continental, MapPanel.SEA_LEVEL, TerrainStatistics.BATCH_GRID));
-		printChunkCost(world);
+				world, continental, WorldBounds.SEA_LEVEL, TerrainStatistics.BATCH_GRID));
+		// Through the registry, so the full run and the command line report from one
+		// implementation. They used to be separate methods, and separate methods drift.
+		run("chunk-cost", model, continental);
 		printMoistureCost(world);
-		printBasinStatistics(world, continental);
-		printDrainageCost(world);
+		run("basins", model, continental);
+		run("drainage-cost", model, continental);
 
 		System.out.println();
 		System.out.println("Wrote to " + OUTPUT_DIR.toAbsolutePath());
+	}
+
+	/** The window every probe measures over unless told otherwise. */
+	private static MapView continentalView(final TerrainModel model) {
+		return new MapView(0, 0,
+				model.plateSettings().crustSpacingBlocks() * CONTINENTAL_SPAN_CELLS, IMAGE_PIXELS);
+	}
+
+	private static void run(
+			final String name, final TerrainModel model, final MapView view,
+			final String... args) {
+		ProbeRegistry.get(name).run(model, ProbeContext.over(view, args)).print();
+	}
+
+	/**
+	 * Runs probes against one world, building it once.
+	 *
+	 * <p>One model for the whole list, because constructing it is the expensive part
+	 * and the range suite is four probes over the same ground. Building one per probe
+	 * would also mean the four described four separately constructed worlds, which are
+	 * identical only as long as nothing in the pipeline is order dependent.
+	 */
+	private static void runProbes(
+			final TerrainModel model, final List<String> names, final String[] args) {
+		MapView view = continentalView(model);
+
+		for (String name : names) {
+			run(name, model, view, args);
+		}
+	}
+
+	private static String[] tail(final String[] args, final int from) {
+		return from >= args.length
+				? new String[0]
+				: java.util.Arrays.copyOfRange(args, from, args.length);
+	}
+
+	private static void listProbes() {
+		System.out.println("PROBES, run with --probe <name> [args]");
+
+		for (Probe probe : ProbeRegistry.all()) {
+			System.out.printf("  %-15s %s%n", probe.name(), probe.description());
+		}
+	}
+
+	/**
+	 * The settings the range suite's numbers only mean anything against.
+	 *
+	 * <p>Half-widths and bin widths are all fractions of crust spacing, so a profile
+	 * read without knowing the spacing it was measured at is a row of numbers with no
+	 * units.
+	 */
+	private static void printRangeHeader(final TerrainModel model) {
+		TerrainSettings terrain = model.terrainSettings();
+		double spacing = model.plateSettings().crustSpacingBlocks();
+
+		System.out.println("RANGE PROBE, tectonic relief before regions and rivers");
+		System.out.printf("  crust spacing        %,.0f blocks%n", spacing);
+		System.out.printf("  range half-width     %,.0f blocks (%.2f x spacing)%n",
+				terrain.rangeWidthBlocks(spacing), terrain.rangeWidthFraction());
+		System.out.printf("  blend width          %,.0f blocks%n", terrain.blendWidthBlocks(spacing));
+		System.out.println();
 	}
 
 	private static void printConfiguration(final TerrainModel model) {
@@ -389,8 +461,8 @@ public final class SimulatorMain {
 		System.out.printf("  mean            y=%,.0f%n", s.meanHeight());
 		System.out.printf("  above sea       %5.1f%%%n", s.aboveSeaShare() * 100.0);
 		System.out.printf("  dimension       y=%d to y=%d, using %.0f%% of it%n",
-				MapPanel.MIN_Y, MapPanel.MAX_Y,
-				s.dimensionUsage(MapPanel.MIN_Y, MapPanel.MAX_Y) * 100.0);
+				WorldBounds.MIN_Y, WorldBounds.MAX_Y,
+				s.dimensionUsage(WorldBounds.MIN_Y, WorldBounds.MAX_Y) * 100.0);
 
 		System.out.println();
 		System.out.printf("Moisture, over %d samples:%n",
@@ -399,70 +471,9 @@ public final class SimulatorMain {
 				s.minPrecipitation(), s.maxPrecipitation(), s.meanPrecipitation());
 		System.out.printf("  humidity        %5.1f%%%n", s.meanHumidity() * 100.0);
 
-		if (s.minHeight() < MapPanel.MIN_Y || s.maxHeight() > MapPanel.MAX_Y) {
+		if (s.minHeight() < WorldBounds.MIN_Y || s.maxHeight() > WorldBounds.MAX_Y) {
 			System.out.println();
 			System.out.println("  *** OUT OF BOUNDS: terrain leaves the dimension and will be clipped");
-		}
-	}
-
-	/**
-	 * Times terrain generation at the rate Minecraft will actually ask for it.
-	 *
-	 * <p>Every other measurement here is about whether the world looks right. This one
-	 * is about whether it can exist. A chunk is 256 columns, and the plate lookup
-	 * feeding each one now resolves the plate of up to 25 candidate crust cells, each
-	 * of which is an 81-site weighted nuclei search. That is a large constant on the
-	 * hottest path in the generator, and the simulator's own render times hide it
-	 * because they are spread across every core.
-	 *
-	 * <p>Single-threaded on purpose. Minecraft generates chunks on a worker pool, so
-	 * the number that matters is the cost of one chunk on one thread, not the
-	 * throughput of a machine with twelve.
-	 *
-	 * <p>Sampled away from the origin so it does not accidentally measure only plate
-	 * interior, which is the cheap case: interiors exhaust the candidate search
-	 * without finding a differing plate, margins usually stop early.
-	 */
-	private static void printChunkCost(final TerrainModel.Snapshot world) {
-		double[] origins = {0.0, 120_000.0, -348_600.0, 75_600.0};
-
-		// Warm up first. The first few thousand calls run interpreted, and reporting
-		// those as the cost would overstate it several times over.
-		for (int i = 0; i < WARMUP_COLUMNS; i++) {
-			world.terrain().heightAt(i * 7.0, i * 13.0);
-		}
-
-		long start = System.nanoTime();
-		int columns = 0;
-
-		for (int chunk = 0; chunk < BENCH_CHUNKS; chunk++) {
-			double baseX = origins[chunk % 2 * 2] + (chunk / 2) * 16.0;
-			double baseZ = origins[chunk % 2 * 2 + 1] + (chunk / 2) * 16.0;
-
-			for (int cz = 0; cz < 16; cz++) {
-				for (int cx = 0; cx < 16; cx++) {
-					world.terrain().heightAt(baseX + cx, baseZ + cz);
-					columns++;
-				}
-			}
-		}
-
-		double elapsedMs = (System.nanoTime() - start) / 1_000_000.0;
-		double perChunk = elapsedMs / BENCH_CHUNKS;
-
-		System.out.println();
-		System.out.println("Generation cost, single-threaded:");
-		System.out.printf("  %,d columns over %d chunks in %,.0f ms%n",
-				columns, BENCH_CHUNKS, elapsedMs);
-		System.out.printf("  %.2f ms per chunk surface%n", perChunk);
-		System.out.printf("  %,.0f columns per second%n", columns / (elapsedMs / 1000.0));
-
-		// A rough budget. Vanilla spends a few ms per chunk on terrain shape, and a
-		// generator wanting to keep up with a player flying needs to stay in that
-		// region across the whole worker pool.
-		if (perChunk > CHUNK_BUDGET_MS) {
-			System.out.printf("  *** OVER BUDGET: %.2f ms against a %.0f ms target%n",
-					perChunk, CHUNK_BUDGET_MS);
 		}
 	}
 
@@ -607,7 +618,7 @@ public final class SimulatorMain {
 				world.terrain(),
 				bestX - reach, bestZ - reach * 0.3,
 				bestX + reach, bestZ + reach * 0.3,
-				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL,
+				WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
 				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT);
 
 		ImageIO.write(section, "PNG", OUTPUT_DIR.resolve("range-section.png").toFile());
@@ -629,7 +640,7 @@ public final class SimulatorMain {
 				world.terrain(),
 				-reach, -reach * 0.4,
 				reach, reach * 0.4,
-				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL,
+				WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
 				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT);
 		long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
@@ -643,192 +654,6 @@ public final class SimulatorMain {
 			final String name, final MapView view,
 			final TerrainModel.Snapshot world, final MapRenderer.Layer layer) throws IOException {
 		write(name, view, MapRenderer.render(world.plates(), view, layer));
-	}
-
-	/**
-	 * What a drainage lookup costs per chunk.
-	 *
-	 * <p>Measured before the carve is built on top of it, not after. The three tier
-	 * solves amortise to nothing across the millions of chunks a basin covers, but the
-	 * nearest-channel search runs for every column of every chunk and is the number that
-	 * decides whether this subsystem is affordable.
-	 *
-	 * <p>Warmed first. A cold measurement here would be measuring basin construction and
-	 * JIT compilation rather than the query, which is the thing being asked about.
-	 */
-	private static void printDrainageCost(final TerrainModel.Snapshot world) {
-		int side = 16;
-		int chunks = 64;
-		double baseX = 120_000.0;
-		double baseZ = -330_000.0;
-
-		for (int i = 0; i < 4_096; i++) {
-			world.drainage().sample(baseX + (i % 64) * 4.0, baseZ + (i / 64) * 4.0);
-		}
-
-		long started = System.nanoTime();
-		int columns = 0;
-
-		for (int chunk = 0; chunk < chunks; chunk++) {
-			double chunkX = baseX + (chunk % 8) * 16.0;
-			double chunkZ = baseZ + (chunk / 8) * 16.0;
-
-			for (int cz = 0; cz < side; cz++) {
-				for (int cx = 0; cx < side; cx++) {
-					world.drainage().sample(chunkX + cx, chunkZ + cz);
-					columns++;
-				}
-			}
-		}
-
-		double elapsedMs = (System.nanoTime() - started) / 1_000_000.0;
-
-		System.out.println();
-		System.out.println("DRAINAGE COST");
-		System.out.printf("  %,d columns over %d chunks in %,.0f ms%n", columns, chunks, elapsedMs);
-		System.out.printf("  %.3f ms per chunk from drainage alone%n", elapsedMs / chunks);
-		System.out.printf("  basins solved %,d, creek patches %,d%n",
-				world.drainage().solvedBasins(), world.drainage().creeks().cachedPatches());
-		printInversionClamps(world);
-	}
-
-	/**
-	 * How often the carve had to be clamped to stop it inverting.
-	 *
-	 * <p>Should be zero. Tier 2 channel elevations come from the filled uplift surface
-	 * and tier 3 elevations climb toward the budget, so a channel standing above its own
-	 * budget should be unreachable. Counting it anyway matters because a guard that fires
-	 * often is not a guard doing its job, it is a model that is wrong somewhere, and
-	 * without a number nobody would ever find out.
-	 */
-	private static void printInversionClamps(final TerrainModel.Snapshot world) {
-		long clamps = world.terrain().inversionClamps() + world.coarse().inversionClamps();
-
-		System.out.printf("  channel above column %,d, mean %.2f blocks, worst %.1f   [steep ground, not a defect]%n",
-				clamps,
-				Math.max(world.terrain().meanInversionExcess(),
-						world.coarse().meanInversionExcess()),
-				Math.max(world.terrain().worstInversionExcess(),
-						world.coarse().worstInversionExcess()));
-	}
-
-	/**
-	 * Basin count and, more importantly, the largest basin found.
-	 *
-	 * <p><b>The largest figure is the margin assumption under measurement.</b> Basins
-	 * are keyed by outlet so that two province tiles containing the same straddling
-	 * basin agree by construction, and that holds only while the 256,000-block margin
-	 * exceeds the largest basin. A figure approaching the margin means the bound is not
-	 * safe on this seed and the design has to widen it.
-	 */
-	private static void printBasinStatistics(
-			final TerrainModel.Snapshot world, final MapView view) {
-		BasinIndex basins = world.basins();
-		HeightField terrain = world.coarse();
-
-		Map<Long, double[]> extents = new HashMap<>();
-		int land = 0;
-
-		double step = view.spanBlocks() / BASIN_SAMPLE_GRID;
-		double minX = view.centreX() - view.spanBlocks() * 0.5;
-		double minZ = view.centreZ() - view.spanBlocks() * 0.5;
-
-		for (int iz = 0; iz < BASIN_SAMPLE_GRID; iz++) {
-			for (int ix = 0; ix < BASIN_SAMPLE_GRID; ix++) {
-				double worldX = minX + (ix + 0.5) * step;
-				double worldZ = minZ + (iz + 0.5) * step;
-
-				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
-					continue;
-				}
-
-				land++;
-
-				// minX, minZ, maxX, maxZ, count
-				double[] box = extents.computeIfAbsent(
-						basins.outletAt(worldX, worldZ),
-						key -> new double[] {worldX, worldZ, worldX, worldZ, 0.0});
-
-				box[0] = Math.min(box[0], worldX);
-				box[1] = Math.min(box[1], worldZ);
-				box[2] = Math.max(box[2], worldX);
-				box[3] = Math.max(box[3], worldZ);
-				box[4]++;
-			}
-		}
-
-		double largest = 0.0;
-		double largestArea = 0.0;
-
-		for (double[] box : extents.values()) {
-			largest = Math.max(largest, Math.max(box[2] - box[0], box[3] - box[1]));
-			largestArea = Math.max(largestArea, box[4]);
-		}
-
-		double marginBlocks = DrainageSettings.defaults().provinceMarginBlocks();
-
-		// Water statistics over the same samples, so lakes are reported against many
-		// basins rather than whichever one the probe happened to pick.
-		int lake = 0;
-		int terminal = 0;
-		int playa = 0;
-		int endorheic = 0;
-
-		for (int iz = 0; iz < BASIN_SAMPLE_GRID; iz++) {
-			for (int ix = 0; ix < BASIN_SAMPLE_GRID; ix++) {
-				double worldX = minX + (ix + 0.5) * step;
-				double worldZ = minZ + (iz + 0.5) * step;
-				double height = terrain.heightAt(worldX, worldZ);
-
-				if (height <= MapPanel.SEA_LEVEL) {
-					continue;
-				}
-
-				var drain = world.drainage().sample(worldX, worldZ);
-
-				if (drain.endorheic()) {
-					endorheic++;
-				}
-
-				if (drain.lakeSurface() > height) {
-					lake++;
-
-					if (world.drainage().terminalLakeAt(worldX, worldZ)) {
-						terminal++;
-					}
-				} else if (world.drainage().playaAt(worldX, worldZ)) {
-					playa++;
-				}
-			}
-		}
-
-		System.out.println();
-		System.out.println("BASINS, over " + land + " land samples");
-		System.out.printf("  distinct basins        %,d%n", extents.size());
-		System.out.printf("  largest span         %,.0f blocks   [needs %,.0f margin, has %,.0f]%n",
-				largest, largest * 1.5, marginBlocks);
-		System.out.printf("  largest share          %.1f%% of land in view%n",
-				land == 0 ? 0.0 : 100.0 * largestArea / land);
-
-		// Not compared against Earth's 2 percent. That figure is dominated by glacial
-		// lakes, and this world has no ice history yet: the design holds MORAINE and
-		// LAKE_LAND back until the glacial overprint exists. Earth's non-glacial lakes
-		// are closer to half a percent of land.
-		System.out.printf("  lakes                  %.2f%% of land, %.0f%% of them terminal"
-				+ "   [non-glacial Earth about 0.5%%]%n",
-				100.0 * lake / land, lake == 0 ? 0.0 : 100.0 * terminal / lake);
-		System.out.printf("  playas                 %.2f%% of land   [Earth about 0.3%%]%n",
-				100.0 * playa / land);
-		System.out.printf("  endorheic              %.1f%% of land drains to no sea   [Earth about 18%%]%n",
-				100.0 * endorheic / land);
-
-		// A basin straddling a tile edge sits half in each tile, so half its span has
-		// to clear both extents, with room to spare for the divides around it. The
-		// bound is therefore 1.5 times the span, not the span itself.
-		if (largest * 1.5 > marginBlocks) {
-			System.out.printf("  *** largest basin needs %,.0f blocks of margin and has "
-					+ "%,.0f; two tiles could disagree about it%n", largest * 1.5, marginBlocks);
-		}
 	}
 
 	/**
@@ -946,7 +771,7 @@ public final class SimulatorMain {
 				double worldX = ix * 12_000.0;
 				double worldZ = iz * 12_000.0;
 
-				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+				if (terrain.heightAt(worldX, worldZ) <= WorldBounds.SEA_LEVEL) {
 					continue;
 				}
 
@@ -1610,7 +1435,7 @@ public final class SimulatorMain {
 				double worldX = -span * 0.5 + (ix + 0.5) * step;
 				double worldZ = -span * 0.5 + (iz + 0.5) * step;
 
-				if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+				if (terrain.heightAt(worldX, worldZ) <= WorldBounds.SEA_LEVEL) {
 					continue;
 				}
 
@@ -1647,7 +1472,7 @@ public final class SimulatorMain {
 					double worldX = -span * 0.5 + (ix + 0.5) * step;
 					double worldZ = -span * 0.5 + (iz + 0.5) * step;
 
-					if (terrain.heightAt(worldX, worldZ) <= MapPanel.SEA_LEVEL) {
+					if (terrain.heightAt(worldX, worldZ) <= WorldBounds.SEA_LEVEL) {
 						continue;
 					}
 
@@ -1756,7 +1581,7 @@ public final class SimulatorMain {
 			final TerrainModel.Snapshot world,
 			final MapRenderer.TerrainLayer layer) throws IOException {
 		write(name, view, MapRenderer.renderTerrain(
-				world, view, layer, MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));
+				world, view, layer, WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL));
 	}
 
 	/**
@@ -1792,7 +1617,7 @@ public final class SimulatorMain {
 				world.terrainFor(view.blocksPerPixel()),
 				worldX - spanBlocks * 0.5, worldZ,
 				worldX + spanBlocks * 0.5, worldZ,
-				MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL,
+				WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
 				CROSS_SECTION_WIDTH, CROSS_SECTION_HEIGHT));
 
 		printSteps(world.uplift().tectonic(), worldX, worldZ, spanBlocks);
@@ -1843,474 +1668,8 @@ public final class SimulatorMain {
 	/** Own crust type and margin class, the two things a step is usually blamed on. */
 	private static String describe(final TectonicHeight.Sample sample) {
 		return String.format("%-11s %-21s base %5.0f rel %6.0f",
-				sample.plate().crust().crustType(), marginClass(sample),
+				sample.plate().crust().crustType(), Probes.marginClass(sample),
 				sample.base(), sample.relief());
-	}
-
-	/**
-	 * Every margin in reach of a walk, one column at a time.
-	 *
-	 * <p>Relief is an average over margins, so when it misbehaves the question is
-	 * always which margins were in the average and what each contributed. A height
-	 * cannot answer that and neither can a section. This prints the terms.
-	 */
-	private static void printMargins(
-			final TerrainModel model, final double worldX, final double worldZ,
-			final int steps) {
-		TerrainModel.Snapshot world = model.snapshot();
-		var plates = world.plates();
-
-		// The generator's own classifier, not RangeType.of. Two types are decided
-		// against region fields this object holds, so asking it is the only way a probe
-		// names the same landform the world builds.
-		var ridge = world.uplift().tectonic().ridge();
-		var terrain = model.terrainSettings();
-		double spacing = model.plateSettings().crustSpacingBlocks();
-		double rangeWidth = terrain.rangeWidthBlocks(spacing);
-		double blendWidth = terrain.blendWidthBlocks(spacing);
-
-		System.out.printf("MARGINS along x from %,.0f for %,d blocks at z=%,.0f%n",
-				worldX, steps, worldZ);
-		System.out.printf("  %10s %6s %8s   %s%n", "x", "count", "sum f.w", "each: type across weight");
-
-		for (int i = 0; i < steps; i++) {
-			double x = worldX + i;
-
-			var found = new java.util.ArrayList<String>();
-			double[] total = new double[1];
-
-			plates.forEachBoundary(x, worldZ, rangeWidth, blendWidth, boundary -> {
-				RangeType type = ridge.rangeType(boundary);
-
-				// The type's own reach, not the shared half-width. Sutures and fault
-				// blocks do not use the same one, and a probe that assumed they did
-				// would report weight for ground the margin has already stopped
-				// building on.
-				double falloff = dome(boundary.boundaryDistance(), ridge.reach(type));
-
-				total[0] += falloff * boundary.weight();
-				found.add(String.format("%s %,.0f w%.3f",
-						type.name().charAt(0) + type.name().substring(1, 4).toLowerCase(),
-						boundary.across(), boundary.weight()));
-			});
-
-			System.out.printf("  %,10.0f %6d %8.4f   %s%n",
-					x, found.size(), total[0], String.join(" | ", found));
-		}
-	}
-
-	/**
-	 * The generator's own falloff, repeated here so the probes measure what it does.
-	 *
-	 * <p>Deliberately identical to {@code MountainRidge.domeAt}. A probe that used a
-	 * linear taper instead reported a margin envelope of 0.374 where the real figure
-	 * was 0.549, which is the sort of error that sends a tuning pass after the wrong
-	 * constant.
-	 */
-	private static double dome(final double distance, final double width) {
-		if (distance >= width) {
-			return 0.0;
-		}
-
-		double t = distance / width;
-
-		return 1.0 - (t * t * (3.0 - 2.0 * t));
-	}
-
-	/**
-	 * What tectonic relief actually does, per class of margin.
-	 *
-	 * <p>Ranges are one undifferentiated relief function today. Before splitting them
-	 * into types this records what that single function produces: which classes of
-	 * margin the world is made of, how tall and how wide each comes out, and whether
-	 * the surface is continuous where the two sides of one boundary disagree about
-	 * what to build.
-	 *
-	 * <p>The continuity walk is the part no render shows. A subduction margin builds
-	 * an arc on the continental side and a trench on the oceanic side, and both sides
-	 * evaluate their own profile at a falloff of 1 where they meet, so the step
-	 * between them is whatever the two peaks differ by.
-	 */
-	private static void printRangeProbe(final TerrainModel model) {
-		TerrainModel.Snapshot world = model.snapshot();
-		TectonicHeight tectonic = world.uplift().tectonic();
-		TerrainSettings terrain = model.terrainSettings();
-		double spacing = model.plateSettings().crustSpacingBlocks();
-		double rangeWidth = terrain.rangeWidthBlocks(spacing);
-
-		System.out.println("RANGE PROBE, tectonic relief before regions and rivers");
-		System.out.printf("  crust spacing        %,.0f blocks%n", spacing);
-		System.out.printf("  range half-width     %,.0f blocks (%.2f x spacing)%n",
-				rangeWidth, terrain.rangeWidthFraction());
-		System.out.printf("  blend width          %,.0f blocks%n",
-				terrain.blendWidthBlocks(spacing));
-		System.out.println();
-
-		printMarginCensus(tectonic, spacing, rangeWidth);
-		printEnvelope(tectonic, spacing, rangeWidth, terrain.blendWidthBlocks(spacing));
-		printReliefProfile(tectonic, spacing, rangeWidth);
-		printReliefContinuity(tectonic, spacing);
-	}
-
-	/**
-	 * Where in the world a given range type is thickest on the ground.
-	 *
-	 * <p>Exists because a census proves a landform is <b>present</b> and a render proves
-	 * it is <b>right</b>, and the render needs somewhere to point. Fault blocks are
-	 * 1,200 blocks apart, which is one and a half pixels in the continental view and
-	 * invisible; the local view is fixed at the origin and landed on a coastline. Both
-	 * showed nothing, and neither was evidence of anything.
-	 *
-	 * <p>Buckets the probe grid coarsely and ranks buckets by how much of each is the
-	 * type asked for, rather than reporting the first hit. A single column of a type
-	 * says nothing about whether the landform around it holds together.
-	 */
-	private static void printWhere(final TerrainModel model, final RangeType target) {
-		TectonicHeight tectonic = model.snapshot().uplift().tectonic();
-		double spacing = model.plateSettings().crustSpacingBlocks();
-		double span = spacing * CONTINENTAL_SPAN_CELLS;
-		double step = span / RANGE_PROBE_GRID;
-		int side = RANGE_PROBE_GRID / FIND_BUCKET_CELLS;
-
-		double[] hits = new double[side * side];
-		double[] height = new double[side * side];
-
-		for (int iz = 0; iz < side * FIND_BUCKET_CELLS; iz++) {
-			for (int ix = 0; ix < side * FIND_BUCKET_CELLS; ix++) {
-				TectonicHeight.Sample sample = tectonic.sample(
-						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
-
-				if (sample.type() != target) {
-					continue;
-				}
-
-				int bucket = (iz / FIND_BUCKET_CELLS) * side + ix / FIND_BUCKET_CELLS;
-
-				hits[bucket]++;
-				height[bucket] += sample.height();
-			}
-		}
-
-		double bucketBlocks = step * FIND_BUCKET_CELLS;
-		double total = FIND_BUCKET_CELLS * (double) FIND_BUCKET_CELLS;
-
-		System.out.printf("WHERE %s is thickest, buckets of %,.0f blocks%n",
-				target.name().toLowerCase().replace('_', ' '), bucketBlocks);
-
-		java.util.stream.IntStream.range(0, hits.length)
-				.boxed()
-				.sorted((a, b) -> Double.compare(hits[b], hits[a]))
-				.limit(FIND_REPORT_LIMIT)
-				.forEach(bucket -> System.out.printf(
-						"  %,10.0f %,10.0f   %5.1f%% of bucket   mean y %5.0f%n",
-						-span * 0.5 + (bucket % side + 0.5) * bucketBlocks,
-						-span * 0.5 + (bucket / side + 0.5) * bucketBlocks,
-						100.0 * hits[bucket] / total,
-						hits[bucket] == 0.0 ? 0.0 : height[bucket] / hits[bucket]));
-
-		System.out.println();
-	}
-
-	/**
-	 * The fraction of its profile a range actually gets to build.
-	 *
-	 * <p>Relief is a sum of weighted profiles over a divisor, so the multiplier
-	 * finally applied to a range's shape is {@code sum(f.w) / max(max(f), sum(f.w))}.
-	 * If that sits below one along an ordinary stretch of margin then every range in
-	 * the world is quietly shortened by the shortfall, and neither a height setting
-	 * nor a profile will show why. This computes the multiplier the way the generator
-	 * does, so tuning the junction softness has a number to aim at.
-	 */
-	private static void printEnvelope(
-			final TectonicHeight tectonic, final double spacing,
-			final double rangeWidth, final double blendWidth) {
-		var plates = tectonic.plates();
-		double span = spacing * CONTINENTAL_SPAN_CELLS;
-		double step = span / ENVELOPE_GRID;
-
-		double total = 0.0;
-		double bestWeight = 0.0;
-		int counted = 0;
-		int full = 0;
-		int starved = 0;
-
-		for (int iz = 0; iz < ENVELOPE_GRID; iz++) {
-			for (int ix = 0; ix < ENVELOPE_GRID; ix++) {
-				double x = -span * 0.5 + ix * step;
-				double z = -span * 0.5 + iz * step;
-
-				// Only where a range is meant to stand. Deep in a plate interior the
-				// answer is correctly nothing, and would drag the average down.
-				if (tectonic.sample(x, z).plate().boundaryDistance() > rangeWidth * 0.5) {
-					continue;
-				}
-
-				// weighted total, strongest falloff, strongest margin weight
-				double[] acc = new double[3];
-
-				plates.forEachBoundary(x, z, rangeWidth, blendWidth, boundary -> {
-					double falloff = dome(boundary.boundaryDistance(), rangeWidth);
-
-					acc[0] += falloff * boundary.weight();
-					acc[1] = Math.max(acc[1], falloff);
-					acc[2] = Math.max(acc[2], boundary.weight());
-				});
-
-				if (acc[1] <= 0.0) {
-					continue;
-				}
-
-				double scale = acc[0] / Math.max(acc[1], acc[0]);
-
-				total += scale;
-				bestWeight += acc[2];
-				counted++;
-
-				if (scale >= 0.95) {
-					full++;
-				} else if (scale < 0.5) {
-					starved++;
-				}
-			}
-		}
-
-		System.out.printf("  height actually built, on the inner half of ranges, %,d columns%n",
-				counted);
-		System.out.printf("    mean fraction of profile     %6.3f   (1.000 is a range at full height)%n",
-				counted == 0 ? 0.0 : total / counted);
-		System.out.printf("    strongest margin weight      %6.3f%n",
-				counted == 0 ? 0.0 : bestWeight / counted);
-		System.out.printf("    at full height               %6.1f%%%n",
-				counted == 0 ? 0.0 : 100.0 * full / counted);
-		System.out.printf("    below half                   %6.1f%%%n",
-				counted == 0 ? 0.0 : 100.0 * starved / counted);
-		System.out.println();
-	}
-
-	/**
-	 * Names the class of margin a sample sits on, at the granularity relief uses.
-	 *
-	 * <p>Reports the range type, which is a property of the pair of crust cells, and
-	 * separately which flank of it the column stands on where that differs. Splitting
-	 * a one-sided range into "arc" and "trench" as if they were different kinds of
-	 * margin is what hid the discontinuity between them: they are one range, and the
-	 * question is which half you are on.
-	 */
-	private static String marginClass(final TectonicHeight.Sample sample) {
-		PlateSample plate = sample.plate();
-
-		// Taken from the sample rather than recomputed. Two types are decided against a
-		// region field the plate pair cannot see, so RangeType.of would report a fault
-		// block province as an ordinary rift and the census would show a landform that
-		// covers whole provinces as not existing at all.
-		RangeType type = sample.type();
-
-		if (type == RangeType.SUBDUCTION_ARC) {
-			return plate.isOverridingPlate() ? "subduction, arc" : "subduction, trench";
-		}
-
-		// Split by crust, because sutures exist only on continental crust and lumping
-		// the two together buries them: an average over every plate interior in the
-		// world is mostly ocean floor, where the answer is correctly zero.
-		if (type == RangeType.FOSSIL_SUTURE) {
-			return plate.crust().isContinental()
-					? "fossil suture, land"
-					: "fossil suture, ocean";
-		}
-
-		return type.name().toLowerCase().replace('_', ' ');
-	}
-
-	/** How much of the world each class of margin owns, and how tall it stands. */
-	private static void printMarginCensus(
-			final TectonicHeight tectonic, final double spacing, final double rangeWidth) {
-		double span = spacing * CONTINENTAL_SPAN_CELLS;
-		double step = span / RANGE_PROBE_GRID;
-
-		Map<String, double[]> byClass = new HashMap<>();
-		int land = 0;
-
-		for (int iz = 0; iz < RANGE_PROBE_GRID; iz++) {
-			for (int ix = 0; ix < RANGE_PROBE_GRID; ix++) {
-				TectonicHeight.Sample sample = tectonic.sample(
-						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
-
-				// count, total height, tallest height, total |relief|, inside a range,
-				// below sea level
-				double[] acc = byClass.computeIfAbsent(
-						marginClass(sample),
-						key -> new double[] {0.0, 0.0, Double.NEGATIVE_INFINITY, 0.0, 0.0, 0.0});
-
-				acc[0]++;
-				acc[1] += sample.height();
-				acc[2] = Math.max(acc[2], sample.height());
-				acc[3] += Math.abs(sample.relief());
-
-				if (sample.plate().boundaryDistance() < rangeWidth) {
-					acc[4]++;
-				}
-
-				// A mean height says nothing about a landform whose whole character is
-				// that it alternates. A province averaging y=30 can be half ranges at
-				// y=200 and half basins under water, and only one of those halves grows
-				// salt flats.
-				if (sample.height() <= 0.0) {
-					acc[5]++;
-				}
-
-				if (sample.height() > 0.0) {
-					land++;
-				}
-			}
-		}
-
-		int total = RANGE_PROBE_GRID * RANGE_PROBE_GRID;
-
-		System.out.printf("  margin class census, %,d columns over %,.0f blocks%n", total, span);
-		System.out.printf("    %-22s %7s %8s %8s %10s %9s %9s%n",
-				"class", "share", "mean y", "max y", "mean|rel|", "in range", "under sea");
-
-		byClass.entrySet().stream()
-				.sorted((a, b) -> Double.compare(b.getValue()[0], a.getValue()[0]))
-				.forEach(entry -> {
-					double[] acc = entry.getValue();
-
-					System.out.printf("    %-22s %6.1f%% %8.0f %8.0f %10.0f %8.1f%% %8.1f%%%n",
-							entry.getKey(), 100.0 * acc[0] / total, acc[1] / acc[0], acc[2],
-							acc[3] / acc[0], 100.0 * acc[4] / acc[0], 100.0 * acc[5] / acc[0]);
-				});
-
-		System.out.printf("    %-22s %6.1f%%%n", "land", 100.0 * land / total);
-		System.out.println();
-	}
-
-	/** Mean relief against distance from the boundary, which is the range's shape. */
-	private static void printReliefProfile(
-			final TectonicHeight tectonic, final double spacing, final double rangeWidth) {
-		double span = spacing * CONTINENTAL_SPAN_CELLS;
-		double step = span / RANGE_PROBE_GRID;
-		double binWidth = rangeWidth / RANGE_PROFILE_BINS;
-
-		Map<String, double[]> totals = new HashMap<>();
-		Map<String, double[]> counts = new HashMap<>();
-
-		for (int iz = 0; iz < RANGE_PROBE_GRID; iz++) {
-			for (int ix = 0; ix < RANGE_PROBE_GRID; ix++) {
-				TectonicHeight.Sample sample = tectonic.sample(
-						-span * 0.5 + ix * step, -span * 0.5 + iz * step);
-
-				int bin = (int) (sample.plate().boundaryDistance() / binWidth);
-
-				if (bin >= RANGE_PROFILE_BINS) {
-					continue;
-				}
-
-				String key = marginClass(sample);
-
-				totals.computeIfAbsent(key, k -> new double[RANGE_PROFILE_BINS])[bin]
-						+= sample.relief();
-				counts.computeIfAbsent(key, k -> new double[RANGE_PROFILE_BINS])[bin]++;
-			}
-		}
-
-		System.out.printf("  relief profile, mean blocks per %,.0f-block bin out from the boundary%n",
-				binWidth);
-
-		totals.entrySet().stream()
-				.sorted(Map.Entry.comparingByKey())
-				.forEach(entry -> {
-					double[] sum = entry.getValue();
-					double[] count = counts.get(entry.getKey());
-					StringBuilder row = new StringBuilder(String.format("    %-22s", entry.getKey()));
-
-					for (int bin = 0; bin < RANGE_PROFILE_BINS; bin++) {
-						row.append(count[bin] == 0.0
-								? String.format("%7s", "-")
-								: String.format("%7.0f", sum[bin] / count[bin]));
-					}
-
-					System.out.println(row);
-				});
-
-		System.out.println();
-	}
-
-	/**
-	 * The largest step the surface takes between two adjacent blocks.
-	 *
-	 * <p>Walked at one-block spacing because the discontinuity being hunted is
-	 * exactly one block wide. It sits on the bisector, where the query's own crust
-	 * cell flips and with it the profile the point is built from, so a walk at any
-	 * coarser spacing averages it away into an ordinary slope.
-	 */
-	private static void printReliefContinuity(
-			final TectonicHeight tectonic, final double spacing) {
-		double worstStep = 0.0;
-		double worstStepAtX = 0.0;
-		double worstStepAtZ = 0.0;
-		String worstStepClass = "";
-
-		double switchedTotal = 0.0;
-		int switchedCount = 0;
-		double switchedWorst = 0.0;
-		String switchedWorstPair = "";
-
-		double heldTotal = 0.0;
-		double heldWorst = 0.0;
-		int heldCount = 0;
-
-		for (int transect = 0; transect < RANGE_TRANSECTS; transect++) {
-			double z = (transect - RANGE_TRANSECTS * 0.5) * spacing * RANGE_TRANSECT_GAP_CELLS;
-			double startX = -RANGE_TRANSECT_BLOCKS * 0.5;
-
-			TectonicHeight.Sample previous = tectonic.sample(startX, z);
-
-			for (int i = 1; i < RANGE_TRANSECT_BLOCKS; i++) {
-				double x = startX + i;
-				TectonicHeight.Sample current = tectonic.sample(x, z);
-
-				double jump = Math.abs(current.height() - previous.height());
-				String before = marginClass(previous);
-				String after = marginClass(current);
-
-				if (before.equals(after)) {
-					heldTotal += jump;
-					heldCount++;
-					heldWorst = Math.max(heldWorst, jump);
-				} else {
-					switchedTotal += jump;
-					switchedCount++;
-
-					if (jump > switchedWorst) {
-						switchedWorst = jump;
-						switchedWorstPair = before + " -> " + after;
-					}
-				}
-
-				if (jump > worstStep) {
-					worstStep = jump;
-					worstStepAtX = x;
-					worstStepAtZ = z;
-					worstStepClass = before.equals(after) ? after : before + " -> " + after;
-				}
-
-				previous = current;
-			}
-		}
-
-		System.out.printf("  continuity, %d transects x %,d blocks at 1-block steps%n",
-				RANGE_TRANSECTS, RANGE_TRANSECT_BLOCKS);
-		System.out.printf("    mean step, class held        %7.3f blocks over %,d steps%n",
-				heldCount == 0 ? 0.0 : heldTotal / heldCount, heldCount);
-		System.out.printf("    mean step, class switched    %7.3f blocks over %,d steps%n",
-				switchedCount == 0 ? 0.0 : switchedTotal / switchedCount, switchedCount);
-		System.out.printf("    worst held step              %7.1f blocks   (the control: ordinary ground)%n",
-				heldWorst);
-		System.out.printf("    worst switched step          %7.1f blocks, %s%n",
-				switchedWorst, switchedWorstPair);
-		System.out.printf("    worst step anywhere          %7.1f blocks at %,.0f, %,.0f, %s%n",
-				worstStep, worstStepAtX, worstStepAtZ, worstStepClass);
-		System.out.println();
 	}
 
 	private static void write(

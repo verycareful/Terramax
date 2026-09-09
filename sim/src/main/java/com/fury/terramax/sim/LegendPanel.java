@@ -71,14 +71,14 @@ public final class LegendPanel extends JPanel {
 
 		switch (terrainLayer) {
 			case ELEVATION_MAGMA -> drawRamp(g, x, y,
-					height -> MapRenderer.magmaColour(height, MapPanel.MIN_Y, MapPanel.MAX_Y));
+					height -> MapRenderer.magmaColour(height, WorldBounds.MIN_Y, WorldBounds.MAX_Y));
 
 			case ELEVATION_RAW -> drawRamp(g, x, y,
-					height -> MapRenderer.rawColour(height, MapPanel.MIN_Y, MapPanel.MAX_Y));
+					height -> MapRenderer.rawColour(height, WorldBounds.MIN_Y, WorldBounds.MAX_Y));
 
 			case ELEVATION_HYPSOMETRIC -> drawRamp(g, x, y,
 					height -> MapRenderer.elevationColour(
-							height, MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL));
+							height, WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL));
 
 			case REGION_TYPE -> drawRegionTypes(g, x, y);
 
@@ -142,8 +142,8 @@ public final class LegendPanel extends JPanel {
 		int stripHeight = 14;
 
 		for (int i = 0; i < width; i++) {
-			double height = MapPanel.MIN_Y
-					+ (MapPanel.MAX_Y - MapPanel.MIN_Y) * (i / (double) width);
+			double height = WorldBounds.MIN_Y
+					+ (WorldBounds.MAX_Y - WorldBounds.MIN_Y) * (i / (double) width);
 
 			g.setColor(ramp.at(height));
 			g.drawLine(x + i, y, x + i, y + stripHeight);
@@ -153,7 +153,7 @@ public final class LegendPanel extends JPanel {
 
 		for (int tick : RAMP_TICKS) {
 			int px = x + (int) Math.round(
-					width * (tick - MapPanel.MIN_Y) / (double) (MapPanel.MAX_Y - MapPanel.MIN_Y));
+					width * (tick - WorldBounds.MIN_Y) / (double) (WorldBounds.MAX_Y - WorldBounds.MIN_Y));
 
 			g.drawLine(px, y + stripHeight, px, y + stripHeight + 4);
 			g.drawString(String.valueOf(tick), Math.min(px - 8, x + width - 30),

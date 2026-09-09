@@ -66,7 +66,7 @@ public final class SectionPanel extends JPanel {
 		pending = new Thread(() -> {
 			BufferedImage image = CrossSectionPlotter.plot(
 					field, startX, startZ, endX, endZ,
-					MapPanel.MIN_Y, MapPanel.MAX_Y, MapPanel.SEA_LEVEL, width, height);
+					WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL, width, height);
 
 			double length = Math.hypot(endX - startX, endZ - startZ);
 

@@ -43,11 +43,6 @@ public final class MapPanel extends JPanel {
 
 	private static final double MAX_SPAN_BLOCKS = 1.0e8;
 
-	/** The dimension's vertical range and sea level. */
-	public static final int MIN_Y = -256;
-	public static final int MAX_Y = 1792;
-	public static final int SEA_LEVEL = 0;
-
 	private static final Color BACKGROUND = new Color(18, 20, 24);
 	private static final Color OVERLAY_TEXT = new Color(232, 236, 244);
 	private static final Color OVERLAY_SHADOW = new Color(0, 0, 0, 170);
@@ -300,7 +295,8 @@ public final class MapPanel extends JPanel {
 			BufferedImage image = requestedTerrain != null
 					? MapRenderer.renderTerrainProgressive(
 							world, view, requestedTerrain,
-							MIN_Y, MAX_Y, SEA_LEVEL, partial -> showPartial(partial, view))
+							WorldBounds.MIN_Y, WorldBounds.MAX_Y, WorldBounds.SEA_LEVEL,
+							partial -> showPartial(partial, view))
 					: MapRenderer.renderProgressive(
 							world.plates(), view, requestedPlate, partial -> showPartial(partial, view));
 
