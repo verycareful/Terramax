@@ -130,6 +130,62 @@ public record PlateMapSettings(
 	 * is not margin, and a different seed would punch through the bottom of the
 	 * world.
 	 */
+	/**
+	 * Copies with one component changed.
+	 *
+	 * <p>These exist because the alternative is what the simulator's sliders were doing:
+	 * rebuilding the whole record positionally, twelve arguments at a time, once per
+	 * slider. Every one of those is a place where two components of the same type can be
+	 * swapped and still compile, and the result is not a crash but a quietly different
+	 * world. There were seven such copies for this record alone.
+	 *
+	 * <p>Only the components something actually varies are here. A wither for every
+	 * field would be symmetric and would mostly be dead code.
+	 */
+	public PlateMapSettings withCrustSpacing(final double blocks) {
+		return new PlateMapSettings(blocks, nucleiSpacingBlocks, nucleiMaxWeightFactor,
+				jitter, continentalFraction, seaLevel, continentalBase, oceanicBase,
+				baseVariation, transformDominance, warp, continentWavelengthFactor);
+	}
+
+	public PlateMapSettings withNucleiSpacing(final double blocks) {
+		return new PlateMapSettings(crustSpacingBlocks, blocks, nucleiMaxWeightFactor,
+				jitter, continentalFraction, seaLevel, continentalBase, oceanicBase,
+				baseVariation, transformDominance, warp, continentWavelengthFactor);
+	}
+
+	public PlateMapSettings withNucleiMaxWeightFactor(final double factor) {
+		return new PlateMapSettings(crustSpacingBlocks, nucleiSpacingBlocks, factor,
+				jitter, continentalFraction, seaLevel, continentalBase, oceanicBase,
+				baseVariation, transformDominance, warp, continentWavelengthFactor);
+	}
+
+	public PlateMapSettings withContinentalFraction(final double fraction) {
+		return new PlateMapSettings(crustSpacingBlocks, nucleiSpacingBlocks,
+				nucleiMaxWeightFactor, jitter, fraction, seaLevel, continentalBase,
+				oceanicBase, baseVariation, transformDominance, warp, continentWavelengthFactor);
+	}
+
+	public PlateMapSettings withTransformDominance(final double dominance) {
+		return new PlateMapSettings(crustSpacingBlocks, nucleiSpacingBlocks,
+				nucleiMaxWeightFactor, jitter, continentalFraction, seaLevel, continentalBase,
+				oceanicBase, baseVariation, dominance, warp, continentWavelengthFactor);
+	}
+
+	public PlateMapSettings withContinentWavelengthFactor(final double factor) {
+		return new PlateMapSettings(crustSpacingBlocks, nucleiSpacingBlocks,
+				nucleiMaxWeightFactor, jitter, continentalFraction, seaLevel, continentalBase,
+				oceanicBase, baseVariation, transformDominance, warp, factor);
+	}
+
+	public PlateMapSettings withWarpStrength(final double fraction) {
+		return new PlateMapSettings(crustSpacingBlocks, nucleiSpacingBlocks,
+				nucleiMaxWeightFactor, jitter, continentalFraction, seaLevel, continentalBase,
+				oceanicBase, baseVariation, transformDominance,
+				new Warp(fraction, warp.wavelengthFactor(), warp.octaves()),
+				continentWavelengthFactor);
+	}
+
 	public static PlateMapSettings defaults() {
 		return new PlateMapSettings(
 				6_000.0,

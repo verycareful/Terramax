@@ -58,6 +58,34 @@ public record RegionSettings(
 	 * rest, which keeps a plateau province recognisably one surface without flattening
 	 * it into a single table.
 	 */
+	/** Copies with one component changed. See {@code PlateMapSettings} for why. */
+	public RegionSettings withSpacing(final double blocks) {
+		return new RegionSettings(blocks, jitter, warpStrengthBlocks, warpWavelengthFactor,
+				warpOctaves, blendFraction, provinceWavelengthBlocks, provinceWeight);
+	}
+
+	public RegionSettings withWarpStrength(final double blocks) {
+		return new RegionSettings(spacingBlocks, jitter, blocks, warpWavelengthFactor,
+				warpOctaves, blendFraction, provinceWavelengthBlocks, provinceWeight);
+	}
+
+	public RegionSettings withBlendFraction(final double fraction) {
+		return new RegionSettings(spacingBlocks, jitter, warpStrengthBlocks,
+				warpWavelengthFactor, warpOctaves, fraction, provinceWavelengthBlocks,
+				provinceWeight);
+	}
+
+	public RegionSettings withProvinceWavelength(final double blocks) {
+		return new RegionSettings(spacingBlocks, jitter, warpStrengthBlocks,
+				warpWavelengthFactor, warpOctaves, blendFraction, blocks, provinceWeight);
+	}
+
+	public RegionSettings withProvinceWeight(final double share) {
+		return new RegionSettings(spacingBlocks, jitter, warpStrengthBlocks,
+				warpWavelengthFactor, warpOctaves, blendFraction, provinceWavelengthBlocks,
+				share);
+	}
+
 	public static RegionSettings defaults() {
 		return new RegionSettings(2_300.0, 0.4, 1_600.0, 2.0, 3, 0.22, 25_000.0, 0.75);
 	}

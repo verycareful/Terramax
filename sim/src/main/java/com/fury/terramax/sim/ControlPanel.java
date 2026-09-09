@@ -60,11 +60,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("spacing", 2_000, 20_000,
 				(int) model.plateSettings().crustSpacingBlocks(),
 				value -> {
-					plates(p -> new PlateMapSettings(
-							value, p.nucleiSpacingBlocks(), p.nucleiMaxWeightFactor(), p.jitter(),
-							p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), p.transformDominance(),
-							p.warp(), p.continentWavelengthFactor()));
+					plates(p -> p.withCrustSpacing(value));
 
 					return String.format("%,d blocks", value);
 				}));
@@ -74,13 +70,7 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					double fraction = value / (double) PERCENT_SCALE;
 
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), p.nucleiSpacingBlocks(), p.nucleiMaxWeightFactor(),
-							p.jitter(), p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), p.transformDominance(),
-							new PlateMapSettings.Warp(
-									fraction, p.warp().wavelengthFactor(), p.warp().octaves()),
-							p.continentWavelengthFactor()));
+					plates(p -> p.withWarpStrength(fraction));
 
 					return String.format("%.2fx spacing (%,.0f blocks)",
 							fraction, model.plateSettings().crustSpacingBlocks() * fraction);
@@ -95,11 +85,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("spacing", 10_000, 200_000,
 				(int) model.plateSettings().nucleiSpacingBlocks(),
 				value -> {
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), value, p.nucleiMaxWeightFactor(), p.jitter(),
-							p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), p.transformDominance(),
-							p.warp(), p.continentWavelengthFactor()));
+					plates(p -> p.withNucleiSpacing(value));
 
 					return String.format("%,d blocks", value);
 				}));
@@ -109,11 +95,7 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					double factor = value / (double) PERCENT_SCALE;
 
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), p.nucleiSpacingBlocks(), factor, p.jitter(),
-							p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), p.transformDominance(),
-							p.warp(), p.continentWavelengthFactor()));
+					plates(p -> p.withNucleiMaxWeightFactor(factor));
 
 					return String.format("%.2fx spacing, %dx%d search",
 							factor,
@@ -133,11 +115,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("continental fraction", 0, PERCENT_SCALE,
 				(int) Math.round(model.plateSettings().continentalFraction() * PERCENT_SCALE),
 				value -> {
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), p.nucleiSpacingBlocks(), p.nucleiMaxWeightFactor(),
-							p.jitter(), value / (double) PERCENT_SCALE, p.seaLevel(),
-							p.continentalBase(), p.oceanicBase(), p.baseVariation(),
-							p.transformDominance(), p.warp(), p.continentWavelengthFactor()));
+					plates(p -> p.withContinentalFraction(value / (double) PERCENT_SCALE));
 
 					return value + "%";
 				}));
@@ -147,11 +125,7 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					double factor = value / (double) PERCENT_SCALE;
 
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), p.nucleiSpacingBlocks(), p.nucleiMaxWeightFactor(),
-							p.jitter(), p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), p.transformDominance(),
-							p.warp(), factor));
+					plates(p -> p.withContinentWavelengthFactor(factor));
 
 					return String.format("%.1f cells (%,.0f blocks)",
 							factor, model.plateSettings().crustSpacingBlocks() * factor);
@@ -160,11 +134,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("transform dominance", PERCENT_SCALE, 8 * PERCENT_SCALE,
 				(int) Math.round(model.plateSettings().transformDominance() * PERCENT_SCALE),
 				value -> {
-					plates(p -> new PlateMapSettings(
-							p.crustSpacingBlocks(), p.nucleiSpacingBlocks(), p.nucleiMaxWeightFactor(),
-							p.jitter(), p.continentalFraction(), p.seaLevel(), p.continentalBase(),
-							p.oceanicBase(), p.baseVariation(), value / (double) PERCENT_SCALE,
-							p.warp(), p.continentWavelengthFactor()));
+					plates(p -> p.withTransformDominance(value / (double) PERCENT_SCALE));
 
 					return String.format("k = %.2f", value / (double) PERCENT_SCALE);
 				}));
@@ -178,10 +148,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("spacing", 500, 10_000,
 				(int) model.regionSettings().spacingBlocks(),
 				value -> {
-					regions(r -> new RegionSettings(
-							value, r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
-							r.provinceWavelengthBlocks(), r.provinceWeight()));
+					regions(r -> r.withSpacing(value));
 
 					return String.format("%,d blocks", value);
 				}));
@@ -189,10 +156,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("warp strength", 0, 8_000,
 				(int) model.regionSettings().warpStrengthBlocks(),
 				value -> {
-					regions(r -> new RegionSettings(
-							r.spacingBlocks(), r.jitter(), value,
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
-							r.provinceWavelengthBlocks(), r.provinceWeight()));
+					regions(r -> r.withWarpStrength(value));
 
 					return String.format("%,d blocks", value);
 				}));
@@ -200,10 +164,7 @@ public final class ControlPanel extends JPanel {
 		group.addControl(slider("province scale", 2_000, 120_000,
 				(int) model.regionSettings().provinceWavelengthBlocks(),
 				value -> {
-					regions(r -> new RegionSettings(
-							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
-							value, r.provinceWeight()));
+					regions(r -> r.withProvinceWavelength(value));
 
 					return String.format("%,d blocks (%.0f regions)",
 							value, value / model.regionSettings().spacingBlocks());
@@ -214,10 +175,7 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					double share = value / (double) PERCENT_SCALE;
 
-					regions(r -> new RegionSettings(
-							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), r.blendFraction(),
-							r.provinceWavelengthBlocks(), share));
+					regions(r -> r.withProvinceWeight(share));
 
 					return String.format("%.0f%% province, %.0f%% own roll",
 							share * 100.0, (1.0 - share) * 100.0);
@@ -228,10 +186,7 @@ public final class ControlPanel extends JPanel {
 				value -> {
 					double fraction = value / (double) PERCENT_SCALE;
 
-					regions(r -> new RegionSettings(
-							r.spacingBlocks(), r.jitter(), r.warpStrengthBlocks(),
-							r.warpWavelengthFactor(), r.warpOctaves(), fraction,
-							r.provinceWavelengthBlocks(), r.provinceWeight()));
+					regions(r -> r.withBlendFraction(fraction));
 
 					return String.format("%.2fx spacing (%,.0f blocks)",
 							fraction, model.regionSettings().spacingBlocks() * fraction);
