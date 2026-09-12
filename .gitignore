@@ -70,3 +70,7 @@ _realworld_backup/
 
 # Logs
 *.log
+
+# Nested companion repo (verycareful/realworld), cloned inside per the Projects
+# nesting rule. Its own git root; never a submodule.
+/realworld_jv/
