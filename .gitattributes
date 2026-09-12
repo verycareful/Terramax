@@ -1,6 +1,11 @@
 #
 # https://help.github.com/articles/dealing-with-line-endings/
 #
+# Everything text is LF in the repo and on every checkout. Without this, a
+# checkout on Windows produced CRLF working copies, and moving the tree to
+# Linux made six untouched core/ files show as wholly modified.
+*               text=auto eol=lf
+
 # Linux start script should use lf
 /gradlew        text eol=lf
 
