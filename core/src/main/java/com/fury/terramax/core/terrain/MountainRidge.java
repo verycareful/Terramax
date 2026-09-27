@@ -326,12 +326,29 @@ public final class MountainRidge {
 	 * width halved the height of every flank in the world.
 	 *
 	 * <p>The larger of the two denominators does all of it. Where one margin
-	 * dominates, the strongest falloff wins and relief is that margin's profile
-	 * undiminished. Where several overlap, their weights sum past it and the result
-	 * becomes an average, bounded by the tallest single contribution. Where the only
-	 * margin in reach is barely a margin, the weight is small but the divisor is not,
-	 * so it builds a fraction of its profile rather than all of it. And a margin
-	 * leaving the set does so with a falloff of zero, contributing nothing anywhere.
+	 * dominates, its falloff wins and relief is that margin's profile undiminished.
+	 * Where several overlap, their weights sum past it and the result becomes an
+	 * average, bounded by the tallest single contribution. Where the only margin in
+	 * reach is barely a margin, the weight is small but the divisor is not, so it builds
+	 * a fraction of its profile rather than all of it.
+	 *
+	 * <p><b>The falloff term is a weighted mean, and taking the maximum instead put
+	 * 82-block walls through quiet ground.</b> A margin has two independent ways of not
+	 * being here: its falloff goes to zero as the query walks away from it, and its
+	 * junction weight goes to zero where a third cell takes over and its stretch of
+	 * bisector stops being a real edge. The maximum saw only the first. So a margin
+	 * could enter the set at a junction weight of three hundred-thousandths, add nothing
+	 * to the numerator, and still hand the divisor its own falloff of 0.86 because it
+	 * happened to be standing close by. Everything already there was then divided by a
+	 * number that had more than doubled between one column and the next. Measured at
+	 * {@code 189,388, -412,767}: relief fell from 152 to 70 in one block with the crust
+	 * base unchanged, and two more sites like it were found within an hour of looking.
+	 *
+	 * <p>A mean weighted by the same weights the numerator uses fixes it without
+	 * changing any of the four properties above, because the weights are what say how
+	 * much each margin counts, and the divisor had been refusing to listen to them. A
+	 * margin with no weight now has no say in the divisor either, so it arrives
+	 * invisibly, which is the whole requirement this enumeration exists to meet.
 	 */
 	/**
 	 * Everything one margin search yields.
@@ -358,7 +375,7 @@ public final class MountainRidge {
 	 */
 	public Result evaluate(final PlateMap plates, final double worldX, final double worldZ) {
 		// An array because a lambda cannot close over mutable locals: weighted relief,
-		// total weight, and the strongest falloff.
+		// total weight, and weighted falloff.
 		double[] acc = new double[3];
 
 		PlateMap.Boundaries margins = plates.forEachBoundary(
@@ -385,17 +402,35 @@ public final class MountainRidge {
 			acc[0] += weight * reliefAt(type, boundary, worldX, worldZ);
 			acc[1] += weight;
 
-			// Tracked without the margin's own weight, deliberately. This is the
-			// divisor that keeps a barely-there margin from building a whole range,
-			// so it must not shrink along with the thing it is meant to restrain.
-			acc[2] = Math.max(acc[2], falloff);
+			// Accumulated with the margin's own weight, so that dividing by the total
+			// weight below yields the mean falloff of the margins actually building
+			// something here. Taking a plain maximum instead let a margin with no
+			// weight set the divisor for everybody, which is the wall this whole
+			// enumeration exists to prevent.
+			acc[2] += weight * falloff;
 		});
 
 		return new Result(
 				margins.nearest(),
 				rangeType(margins.nearest()),
-				acc[2] <= 0.0 ? 0.0 : acc[0] / Math.max(acc[2], acc[1]),
+				combine(acc),
 				margins.crustBase());
+	}
+
+	/**
+	 * Weighted relief over the larger of the total weight and the mean falloff.
+	 *
+	 * <p>Separated out because the expression is the load-bearing line of the class and
+	 * had grown three clauses long inside a return.
+	 */
+	private static double combine(final double[] acc) {
+		if (acc[1] <= 0.0) {
+			return 0.0;
+		}
+
+		double meanFalloff = acc[2] / acc[1];
+
+		return acc[0] / Math.max(meanFalloff, acc[1]);
 	}
 
 	/**

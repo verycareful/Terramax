@@ -20,6 +20,14 @@ import com.fury.terramax.sim.TerrainModel;
  * the origin so the walk is the same every run and successive builds are comparable;
  * measuring wherever the map happens to be would make the numbers incomparable, which
  * is the one thing this report cannot afford.
+ *
+ * <p><b>Being comparable is the whole of its job, and is not the same as being
+ * complete.</b> Eight transects around the origin cover a box 20,000 blocks by 82,000
+ * in a world that is unbounded, so this reporting 7.4 blocks says the ground near the
+ * origin is sound and says nothing at all about the rest. It said exactly that for
+ * three commits while an 82-block wall stood at {@code 189,388, -412,767}. Hunting for
+ * walls anywhere is {@link WallProbe}'s job; do not widen this one to do it, or the
+ * numbers stop being comparable and the regression control is gone.
  */
 public final class ReliefContinuityProbe implements Probe {
 	private static final int TRANSECTS = 8;
