@@ -22,10 +22,11 @@ import com.fury.terramax.core.plate.PlateSample;
  * side evaluating -80 at the same falloff of 1 left a step of the difference between
  * them along the whole margin.
  *
- * <p><b>One of the design's seven range types is not here yet.</b> Hotspots need a
- * point field that does not hang off plate geometry at all, which is its own slice.
- * Everything else the crust lattice can produce on its own is here, plus the two
- * margins that are not ranges.
+ * <p><b>One type is not a margin at all.</b> {@link #HOTSPOT} relief comes from a
+ * point field that ignores plate geometry entirely, and is built by
+ * {@code HotspotField} rather than by the margin profile. It is here because the
+ * question a biome asks is what shaped this ground, and a shield volcano is an
+ * answer to that question even though no pair of cells made it.
  *
  * <p><b>Not every type is decidable from the pair alone.</b> {@link #of} answers the
  * structural question, what these two cells are doing to each other, and that is all
@@ -103,6 +104,23 @@ public enum RangeType {
 	 */
 	FAULT_BLOCK,
 
+	/**
+	 * A mantle plume under the plate: the one uplift that owes nothing to a margin.
+	 *
+	 * <p>Valuable for exactly that reason. Every other type here sits on a seam
+	 * between two cells, so every other range in the world runs along the crust
+	 * lattice; a plume puts relief in the middle of a plate, where nothing else will.
+	 * On ocean floor it is a chain of shield volcanoes, active at the plume and
+	 * ageing to seamounts along the plate's motion vector. On a continent it is a
+	 * broad swell with a caldera, trailing a plain of old flows.
+	 *
+	 * <p>Never returned by {@link #of}, and never chosen by
+	 * {@link MountainRidge#rangeType} either. A column reports it when the plume's
+	 * relief there outweighs whatever the nearest margin builds, which is decided in
+	 * {@code TectonicHeight}, the only place that sees both.
+	 */
+	HOTSPOT,
+
 	/** Ocean floor spreading. A broad symmetric swell, the most ordinary shape here. */
 	OCEANIC_RIDGE,
 
@@ -152,7 +170,8 @@ public enum RangeType {
 	 *
 	 * <p>Never returns {@link #FAULT_BLOCK}. Whether a rift is part of a stretched
 	 * province is a question about the region around it, which the pair cannot answer;
-	 * {@link MountainRidge#rangeType} asks it.
+	 * {@link MountainRidge#rangeType} asks it. Never returns {@link #HOTSPOT} either,
+	 * which is not a property of any pair.
 	 */
 	public static RangeType of(final PlateSample margin) {
 		return switch (margin.boundaryType()) {
@@ -180,7 +199,9 @@ public enum RangeType {
 	 * is asymmetric for a different reason: every block in the train tilts the same
 	 * way, so the shape repeats rather than reflects. Both are still identical from
 	 * either side of the margin, because both read the signed across-axis, which the
-	 * pair agrees on.
+	 * pair agrees on. {@link #HOTSPOT} has no margin to be symmetric about; its
+	 * relief is radial about a point, and it answers true because nothing about it
+	 * depends on which side of anything a column stands.
 	 */
 	public boolean isSymmetric() {
 		return this != SUBDUCTION_ARC && this != ISLAND_ARC && this != FAULT_BLOCK;

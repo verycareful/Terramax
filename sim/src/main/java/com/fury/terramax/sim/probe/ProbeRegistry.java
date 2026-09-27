@@ -24,6 +24,7 @@ public final class ProbeRegistry {
 			new RangeEnvelopeProbe(),
 			new ReliefProfileProbe(),
 			new ReliefContinuityProbe(),
+			new HotspotProbe(),
 			new FindRangeTypeProbe(),
 			new MarginWalkProbe(),
 			new BasinProbe(),

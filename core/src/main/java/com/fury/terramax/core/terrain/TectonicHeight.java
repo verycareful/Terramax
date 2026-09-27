@@ -30,12 +30,14 @@ import com.fury.terramax.core.plate.PlateSample;
 public final class TectonicHeight implements HeightField {
 	private final PlateMap plates;
 	private final MountainRidge ridge;
+	private final HotspotField hotspots;
 	private final double blendWidthBlocks;
 
 	public TectonicHeight(
 			final long seed, final PlateMap plates, final TerrainSettings settings) {
 		this.plates = plates;
 		this.ridge = new MountainRidge(seed, settings, plates.settings().crustSpacingBlocks());
+		this.hotspots = new HotspotField(seed, plates, settings.hotspots());
 		this.blendWidthBlocks = settings.blendWidthBlocks(plates.settings().crustSpacingBlocks());
 	}
 
@@ -55,12 +57,15 @@ public final class TectonicHeight implements HeightField {
 	 *                    by {@code PlateMap}. Blending it here against the nearest
 	 *                    differing <i>plate</i> left a step at every seam inside a
 	 *                    plate, which is most of them
-	 * @param relief      mountains, arcs, trenches and rifts
+	 * @param relief      every source of boundary relief and plume relief, summed:
+	 *                    mountains, arcs, trenches, rifts and shield volcanoes
+	 * @param hotspot     the part of {@code relief} that came from plumes, which is
+	 *                    the only part no margin accounts for
 	 * @param interiority 0 at a plate boundary, 1 once past the blend width
 	 */
 	public record Sample(
 			PlateSample plate, RangeType type,
-			double base, double relief, double interiority) {
+			double base, double relief, double hotspot, double interiority) {
 		/** The tectonic surface here. */
 		public double height() {
 			return base + relief;
@@ -82,17 +87,45 @@ public final class TectonicHeight implements HeightField {
 		return ridge;
 	}
 
+	/** The plume field, for probes that enumerate hotspots rather than sample ground. */
+	public HotspotField hotspots() {
+		return hotspots;
+	}
+
 	public double seaLevel() {
 		return plates.settings().seaLevel();
 	}
 
+	/**
+	 * The tectonic surface here, and what built it.
+	 *
+	 * <p><b>Plume relief is added to margin relief, not chosen between.</b> The two are
+	 * independent processes and a real plume under a real margin builds on top of it:
+	 * Iceland is a hotspot sitting on a spreading ridge and stands higher than either
+	 * would alone. Summing is also the only form that stays continuous, since both
+	 * terms are continuous everywhere and a choice between them would step wherever
+	 * the winner changed.
+	 *
+	 * <p>The <b>type</b> is a choice, and it is made here because this is the only place
+	 * that sees both. It names whichever process put more relief under the column,
+	 * which is the question a biome is asking: a shield volcano on the flank of an
+	 * island arc is a shield volcano. The type can therefore change from one column to
+	 * the next without the surface changing at all, which is correct, and is why the
+	 * amount is carried separately for anything that needs to weigh rather than name.
+	 */
 	public Sample sample(final double worldX, final double worldZ) {
 		MountainRidge.Result ridged = ridge.evaluate(plates, worldX, worldZ);
 		PlateSample plate = ridged.nearest();
 
 		double interiority = smoothstep(plate.boundaryDistance() / blendWidthBlocks);
+		double plume = hotspots.reliefAt(worldX, worldZ);
 
-		return new Sample(plate, ridged.type(), ridged.base(), ridged.relief(), interiority);
+		RangeType type = Math.abs(plume) > Math.abs(ridged.relief())
+				? RangeType.HOTSPOT
+				: ridged.type();
+
+		return new Sample(
+				plate, type, ridged.base(), ridged.relief() + plume, plume, interiority);
 	}
 
 	@Override

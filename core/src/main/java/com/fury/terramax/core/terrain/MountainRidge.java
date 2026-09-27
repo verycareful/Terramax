@@ -511,6 +511,11 @@ public final class MountainRidge {
 
 			case FAULT_BLOCK -> faultBlockProfile(across, sample.alongBoundary());
 
+			// A plume is not a margin, so no margin builds one. Reached only if a
+			// caller hands this method a type it did not get from rangeType, and
+			// zero is the truthful answer to what this margin builds.
+			case HOTSPOT -> 0.0;
+
 			case OCEANIC_RIDGE -> settings.oceanicRidgeRise() * dome(Math.abs(across));
 
 			case TRANSFORM -> settings.transformRelief() * dome(Math.abs(across));
@@ -711,6 +716,11 @@ public final class MountainRidge {
 	 * its own curve would put the burden of continuity on each of them separately;
 	 * summing humps that are each smooth and each reach zero means a profile cannot
 	 * be discontinuous however the humps are arranged.
+	 *
+	 * <p>Package visible because {@link HotspotField} assembles its shields and swells
+	 * from the same hump. A second copy of this curve there would be a second answer to
+	 * the question of how relief reaches zero, and the probe layer already paid for
+	 * learning what a second copy costs.
 	 */
 	private static double smoothstep(final double x) {
 		double t = Math.max(0.0, Math.min(1.0, x));
@@ -718,7 +728,7 @@ public final class MountainRidge {
 		return t * t * (3.0 - 2.0 * t);
 	}
 
-	private static double domeAt(final double distance, final double width) {
+	static double domeAt(final double distance, final double width) {
 		if (distance >= width) {
 			return 0.0;
 		}

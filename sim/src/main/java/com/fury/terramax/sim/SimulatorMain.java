@@ -1665,11 +1665,20 @@ public final class SimulatorMain {
 						step.x(), step.jump(), step.before(), step.after()));
 	}
 
-	/** Own crust type and margin class, the two things a step is usually blamed on. */
+	/**
+	 * Own crust type and margin class, the two things a step is usually blamed on,
+	 * plus how much of the relief came from a plume.
+	 *
+	 * <p>The plume share is here because a step's class can hold across it while the
+	 * cause changes completely. Hotspot relief is added to whatever the nearest margin
+	 * builds, so a chain of shields crossing a quiet transform margin reports as
+	 * transform on both sides of a 36-block jump, and without this column there is
+	 * nothing in the line to say which of the two built it.
+	 */
 	private static String describe(final TectonicHeight.Sample sample) {
-		return String.format("%-11s %-21s base %5.0f rel %6.0f",
+		return String.format("%-11s %-21s base %5.0f rel %6.0f plume %6.0f",
 				sample.plate().crust().crustType(), Probes.marginClass(sample),
-				sample.base(), sample.relief());
+				sample.base(), sample.relief(), sample.hotspot());
 	}
 
 	private static void write(

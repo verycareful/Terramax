@@ -76,6 +76,16 @@ public final class Probes {
 					: "fossil suture, ocean";
 		}
 
+		// Split for the same reason, and by the column's own crust rather than the
+		// plume's. The two landforms are nothing alike, one being a chain of islands
+		// and the other a swell with a hole in it, and a mean height over both says
+		// nothing about either.
+		if (type == RangeType.HOTSPOT) {
+			return plate.crust().isContinental()
+					? "hotspot, swell"
+					: "hotspot, chain";
+		}
+
 		return type.name().toLowerCase().replace('_', ' ');
 	}
 }

@@ -33,6 +33,8 @@ package com.fury.terramax.core.terrain;
  *                                 basins rather than leaving them as open troughs
  * @param faultBlockSpacingFraction distance from one fault block to the next, in crust
  *                                 spacings. Sets how many ranges a province contains
+ * @param hotspots                 relief from mantle plumes, which is the one source of
+ *                                 uplift that ignores plate margins entirely
  * @param oceanicRidgeRise         height of a mid-ocean ridge where ocean floor spreads
  * @param fossilSutureRise         peak rise of a fossil suture at full survival, in
  *                                 blocks, before its hashed age decays it
@@ -57,6 +59,7 @@ public record TerrainSettings(
 		double faultBlockRise,
 		double faultBlockSubsidence,
 		double faultBlockSpacingFraction,
+		Hotspots hotspots,
 		double oceanicRidgeRise,
 		double fossilSutureRise,
 		double transformRelief,
@@ -101,6 +104,76 @@ public record TerrainSettings(
 
 		public double alongWavelength() {
 			return acrossWavelength * alongFactor;
+		}
+	}
+
+	/**
+	 * Relief from mantle plumes, which sit still while the plates slide over them.
+	 *
+	 * <p>Two landforms from one mechanism, chosen by the crust over the plume. On
+	 * ocean floor a shield volcano grows over the plume and is carried off by the
+	 * plate, so the result is a chain: an active shield at the plume and a line of
+	 * older, lower, more eroded ones trailing away in the direction the plate moves,
+	 * ending as seamounts. Hawaii. On a continent the plume lifts a broad swell with a
+	 * caldera at its centre, and what trails behind is a plain of old flows sitting
+	 * below the ground around it. Yellowstone and the Snake River Plain.
+	 *
+	 * <p>Lengths are in crust spacings and heights in blocks, as everywhere else here.
+	 *
+	 * @param spacingFraction     mean distance between plume lattice cells
+	 * @param density             fraction of those cells that hold a plume, in [0, 1].
+	 *                            Below one so the field is sparse and irregular rather
+	 *                            than one plume per cell like clockwork
+	 * @param trackFraction       length of the trail behind a plume under the fastest
+	 *                            plate. A slower plate carries its volcanoes a shorter
+	 *                            way in the same time, so the trail scales with speed
+	 * @param shieldRise          height of the active oceanic shield above the seafloor
+	 * @param shieldRadiusFraction footprint radius of that shield. Large, because a shield
+	 *                            is a shield and not a cone
+	 * @param chainSpacingFraction distance from one shield to the next along the chain
+	 * @param domeRise            height of the continental swell over the plume
+	 * @param domeRadiusFraction  radius of that swell
+	 * @param calderaDrop         how far the caldera at its centre sinks below the swell
+	 * @param calderaRadiusFraction radius of the caldera
+	 * @param trackDrop           how far the plain of old flows sits below its
+	 *                            surroundings
+	 * @param trackHalfWidthFraction half-width of that plain
+	 */
+	public record Hotspots(
+			double spacingFraction,
+			double density,
+			double trackFraction,
+			double shieldRise,
+			double shieldRadiusFraction,
+			double chainSpacingFraction,
+			double domeRise,
+			double domeRadiusFraction,
+			double calderaDrop,
+			double calderaRadiusFraction,
+			double trackDrop,
+			double trackHalfWidthFraction) {
+		public Hotspots {
+			if (density < 0.0 || density > 1.0) {
+				throw new IllegalArgumentException("density must be in [0, 1], got " + density);
+			}
+
+			if (chainSpacingFraction <= 0.0) {
+				throw new IllegalArgumentException(
+						"chainSpacingFraction must be positive, got " + chainSpacingFraction);
+			}
+		}
+
+		/**
+		 * How far from a plume any of its relief can reach, in crust spacings.
+		 *
+		 * <p>The trail under the fastest plate, plus whichever is wider of the shield
+		 * at its end and the plain around it, or the swell around the plume itself.
+		 * The search radius, so it has to be an overestimate rather than a guess.
+		 */
+		public double reachFraction() {
+			return Math.max(
+					domeRadiusFraction,
+					trackFraction + Math.max(shieldRadiusFraction, trackHalfWidthFraction));
 		}
 	}
 
@@ -156,6 +229,25 @@ public record TerrainSettings(
 				// little over five ranges across one margin's width, and provinces tile,
 				// so a belt holds many more than five.
 				0.20,
+
+				// Earth has around fifty hotspots on 510 million square kilometres, one
+				// per 3,000km or so, which at 35m per block is 85,000 blocks. Twelve
+				// crust spacings at six tenths density gives a mean separation near
+				// that, and a plume every plate or two rather than one per plate.
+				//
+				// The chain is three spacings, 18,000 blocks under the fastest plate.
+				// Hawaii's islands run about 600km from the Big Island to Kauai before
+				// the chain goes under as atolls and seamounts, and the Snake River
+				// Plain is about as long.
+				//
+				// A shield rises 780 over the seafloor, so with the oceanic base at -115
+				// the active summit stands near y=665, Mauna Kea's 4,200m over the sea
+				// at 6.3m per block. Its radius is 2,100, the Big Island being about
+				// 150km across. The continental swell is a tenth of that height over
+				// four times the radius: Yellowstone's is 600km wide and 500m high, and
+				// the caldera in the middle of it is 60km across and a few hundred
+				// metres deep.
+				new Hotspots(12.0, 0.6, 3.0, 780.0, 0.35, 0.6, 110.0, 1.3, 45.0, 0.15, 40.0, 0.35),
 				260.0,
 
 				// The ceiling for the youngest seam in a belt, not the typical one. A
